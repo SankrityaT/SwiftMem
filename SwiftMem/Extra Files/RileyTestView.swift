@@ -7,7 +7,7 @@ import SwiftUI
 
 struct RileyTestView: View {
     // 🔑 PASTE YOUR GROQ API KEY HERE
-    private let groqAPIKey = "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"
+    private let groqAPIKey = ""
     
     // Store components to reuse across tests
     @State private var graphStore: GraphStore?

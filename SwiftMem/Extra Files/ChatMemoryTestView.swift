@@ -9,7 +9,7 @@ import SwiftUI
 
 struct ChatMemoryTestView: View {
     // 🔑 PASTE YOUR GROQ API KEY HERE
-    private let groqAPIKey = "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"
+    private let groqAPIKey = ""
     
     // SwiftMem components
         @State private var graphStore: GraphStore?
