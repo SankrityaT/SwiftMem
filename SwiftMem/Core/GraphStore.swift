@@ -44,7 +44,7 @@ public actor GraphStore {
     private let config: SwiftMemConfig
     
     // Current schema version
-    private static let currentSchemaVersion = 1
+    private static let currentSchemaVersion = 2  // v2: Added conversationDate and eventDate
     
     // MARK: - Initialization
     
@@ -56,8 +56,13 @@ public actor GraphStore {
     
     /// Create and initialize a GraphStore
     public static func create(config: SwiftMemConfig) async throws -> GraphStore {
+        return try await create(config: config, filename: "swiftmem_graph.db")
+    }
+    
+    /// Create and initialize a GraphStore with custom filename
+    public static func create(config: SwiftMemConfig, filename: String) async throws -> GraphStore {
         // Database file path
-        let dbPath = try config.storageLocation.url(filename: "swiftmem_graph.db")
+        let dbPath = try config.storageLocation.url(filename: filename)
         
         // Open database
         var db: OpaquePointer?
@@ -132,6 +137,8 @@ public actor GraphStore {
                 type TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
+                conversation_date TEXT NOT NULL,
+                event_date TEXT,
                 metadata TEXT
             );
             """,
@@ -217,8 +224,31 @@ public actor GraphStore {
     }
     
     private func runMigration(to version: Int) async throws {
-        // Future migrations will go here
-        // Example: if version == 2 { /* migration code */ }
+        switch version {
+        case 2:
+            // Add dual timestamp columns (check if they exist first)
+            let hasConversationDate = try checkColumnExists(table: "nodes", column: "conversation_date")
+            if !hasConversationDate {
+                try execute("""
+                ALTER TABLE nodes ADD COLUMN conversation_date TEXT;
+                """)
+                
+                // Backfill conversation_date with created_at for existing rows
+                try execute("""
+                UPDATE nodes SET conversation_date = created_at WHERE conversation_date IS NULL;
+                """)
+            }
+            
+            let hasEventDate = try checkColumnExists(table: "nodes", column: "event_date")
+            if !hasEventDate {
+                try execute("""
+                ALTER TABLE nodes ADD COLUMN event_date TEXT;
+                """)
+            }
+            
+        default:
+            break
+        }
         
         // Record migration
         let timestamp = ISO8601DateFormatter().string(from: Date())
@@ -228,6 +258,32 @@ public actor GraphStore {
         """
         
         try execute(insertVersion)
+    }
+    
+    private func checkColumnExists(table: String, column: String) throws -> Bool {
+        let sql = "PRAGMA table_info(\(table));"
+        
+        var statement: OpaquePointer?
+        defer {
+            if statement != nil {
+                sqlite3_finalize(statement)
+            }
+        }
+        
+        guard sqlite3_prepare_v2(self.db, sql, -1, &statement, nil) == SQLITE_OK else {
+            return false
+        }
+        
+        while sqlite3_step(statement) == SQLITE_ROW {
+            if let namePtr = sqlite3_column_text(statement, 1) {
+                let columnName = String(cString: namePtr)
+                if columnName == column {
+                    return true
+                }
+            }
+        }
+        
+        return false
     }
     
     // MARK: - Node Operations
@@ -248,8 +304,8 @@ public actor GraphStore {
                 let metadataJSON = try encodeMetadata(node.metadata)
                 
                 let sql = """
-                INSERT OR REPLACE INTO nodes (id, content, type, created_at, updated_at, metadata)
-                VALUES (?, ?, ?, ?, ?, ?);
+                INSERT OR REPLACE INTO nodes (id, content, type, created_at, updated_at, conversation_date, event_date, metadata)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?);
                 """
                 
                 var statement: OpaquePointer?
@@ -268,13 +324,23 @@ public actor GraphStore {
                 let typeStr = node.type.rawValue
                 let createdStr = ISO8601DateFormatter().string(from: node.createdAt)
                 let updatedStr = ISO8601DateFormatter().string(from: node.updatedAt)
+                let conversationStr = ISO8601DateFormatter().string(from: node.conversationDate)
+                let eventStr = node.eventDate.map { ISO8601DateFormatter().string(from: $0) }
                 
                 idStr.withCString { sqlite3_bind_text(statement, 1, $0, -1, SQLITE_TRANSIENT) }
                 node.content.withCString { sqlite3_bind_text(statement, 2, $0, -1, SQLITE_TRANSIENT) }
                 typeStr.withCString { sqlite3_bind_text(statement, 3, $0, -1, SQLITE_TRANSIENT) }
                 createdStr.withCString { sqlite3_bind_text(statement, 4, $0, -1, SQLITE_TRANSIENT) }
                 updatedStr.withCString { sqlite3_bind_text(statement, 5, $0, -1, SQLITE_TRANSIENT) }
-                metadataJSON.withCString { sqlite3_bind_text(statement, 6, $0, -1, SQLITE_TRANSIENT) }
+                conversationStr.withCString { sqlite3_bind_text(statement, 6, $0, -1, SQLITE_TRANSIENT) }
+                
+                if let eventStr = eventStr {
+                    eventStr.withCString { sqlite3_bind_text(statement, 7, $0, -1, SQLITE_TRANSIENT) }
+                } else {
+                    sqlite3_bind_null(statement, 7)
+                }
+                
+                metadataJSON.withCString { sqlite3_bind_text(statement, 8, $0, -1, SQLITE_TRANSIENT) }
                 
                 guard sqlite3_step(statement) == SQLITE_DONE else {
                     throw SwiftMemError.storageError("Failed to insert node: \(lastErrorMessage())")
@@ -291,7 +357,7 @@ public actor GraphStore {
     /// Retrieve a node by ID
     public func getNode(_ id: NodeID) async throws -> Node? {
         let sql = """
-        SELECT id, content, type, created_at, updated_at, metadata
+        SELECT id, content, type, created_at, updated_at, conversation_date, event_date, metadata
         FROM nodes WHERE id = ?;
         """
         
@@ -324,7 +390,7 @@ public actor GraphStore {
         limit: Int? = nil,
         offset: Int = 0
     ) async throws -> [Node] {
-        var sql = "SELECT id, content, type, created_at, updated_at, metadata FROM nodes WHERE 1=1"
+        var sql = "SELECT id, content, type, created_at, updated_at, conversation_date, event_date, metadata FROM nodes WHERE 1=1"
         var conditions: [String] = []
         
         if let type = type {
@@ -337,6 +403,80 @@ public actor GraphStore {
         
         if let createdBefore = createdBefore {
             conditions.append("created_at <= '\(ISO8601DateFormatter().string(from: createdBefore))'")
+        }
+        
+        if !conditions.isEmpty {
+            sql += " AND " + conditions.joined(separator: " AND ")
+        }
+        
+        sql += " ORDER BY created_at DESC"
+        
+        if let limit = limit {
+            sql += " LIMIT \(limit) OFFSET \(offset)"
+        }
+        
+        sql += ";"
+        
+        var statement: OpaquePointer?
+        defer {
+            if statement != nil {
+                sqlite3_finalize(statement)
+            }
+        }
+        
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw SwiftMemError.storageError("Failed to prepare nodes query: \(lastErrorMessage())")
+        }
+        
+        var nodes: [Node] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            let node = try decodeNode(from: statement!)
+            nodes.append(node)
+        }
+        
+        return nodes
+    }
+    
+    /// Get nodes with flexible filtering (for ConflictDetector)
+    public func getNodes(
+        filters: [NodeFilter] = [],
+        limit: Int? = nil,
+        offset: Int = 0
+    ) async throws -> [Node] {
+        var sql = "SELECT id, content, type, created_at, updated_at, conversation_date, event_date, metadata FROM nodes WHERE 1=1"
+        var conditions: [String] = []
+        
+        for filter in filters {
+            switch filter {
+            case .type(let memoryType):
+                conditions.append("type = '\(memoryType.rawValue)'")
+            case .createdAfter(let date):
+                conditions.append("created_at >= '\(ISO8601DateFormatter().string(from: date))'")
+            case .createdBefore(let date):
+                conditions.append("created_at <= '\(ISO8601DateFormatter().string(from: date))'")
+            case .contentContains(let text):
+                conditions.append("content LIKE '%\(text)%'")
+            case .metadataKey(let key):
+                conditions.append("metadata LIKE '%\"\(key)\"%'")
+            case .metadataValue(let key, let value):
+                // Check both key and value in JSON metadata
+                // Format: "key":"value" for strings, "key":123 for ints, etc.
+                let valueStr: String
+                switch value {
+                case .string(let str):
+                    valueStr = "\"\(key)\":\"\(str)\""
+                case .int(let int):
+                    valueStr = "\"\(key)\":\(int)"
+                case .double(let double):
+                    valueStr = "\"\(key)\":\(double)"
+                case .bool(let bool):
+                    valueStr = "\"\(key)\":\(bool)"
+                @unknown default:
+                    // Fallback to just checking key exists
+                    valueStr = "\"\(key)\""
+                }
+                conditions.append("metadata LIKE '%\(valueStr)%'")
+            }
         }
         
         if !conditions.isEmpty {
@@ -487,13 +627,20 @@ public actor GraphStore {
                     throw SwiftMemError.storageError("Failed to prepare edge insert: \(lastErrorMessage())")
                 }
                 
-                sqlite3_bind_text(statement, 1, edge.id.value.uuidString, -1, nil)
-                sqlite3_bind_text(statement, 2, edge.fromNodeID.value.uuidString, -1, nil)
-                sqlite3_bind_text(statement, 3, edge.toNodeID.value.uuidString, -1, nil)
-                sqlite3_bind_text(statement, 4, edge.relationshipType, -1, nil)
+                // Keep strings alive with .withCString and SQLITE_TRANSIENT
+                let idStr = edge.id.value.uuidString
+                let fromStr = edge.fromNodeID.value.uuidString
+                let toStr = edge.toNodeID.value.uuidString
+                let relStr = edge.relationshipType.rawValue
+                let createdStr = ISO8601DateFormatter().string(from: edge.createdAt)
+                
+                idStr.withCString { sqlite3_bind_text(statement, 1, $0, -1, SQLITE_TRANSIENT) }
+                fromStr.withCString { sqlite3_bind_text(statement, 2, $0, -1, SQLITE_TRANSIENT) }
+                toStr.withCString { sqlite3_bind_text(statement, 3, $0, -1, SQLITE_TRANSIENT) }
+                relStr.withCString { sqlite3_bind_text(statement, 4, $0, -1, SQLITE_TRANSIENT) }
                 sqlite3_bind_double(statement, 5, edge.weight)
-                sqlite3_bind_text(statement, 6, ISO8601DateFormatter().string(from: edge.createdAt), -1, nil)
-                sqlite3_bind_text(statement, 7, metadataJSON, -1, nil)
+                createdStr.withCString { sqlite3_bind_text(statement, 6, $0, -1, SQLITE_TRANSIENT) }
+                metadataJSON.withCString { sqlite3_bind_text(statement, 7, $0, -1, SQLITE_TRANSIENT) }
                 
                 guard sqlite3_step(statement) == SQLITE_DONE else {
                     throw SwiftMemError.storageError("Failed to insert edge: \(lastErrorMessage())")
@@ -558,13 +705,13 @@ public actor GraphStore {
     }
     
     /// Get edges by relationship type
-    public func getEdges(byRelationship relationship: String) async throws -> [Edge] {
+    public func getEdges(byRelationship relationship: RelationshipType) async throws -> [Edge] {
         let sql = """
         SELECT id, from_node_id, to_node_id, relationship_type, weight, created_at, metadata
         FROM edges WHERE relationship_type = ?;
         """
         
-        return try await queryEdges(sql: sql, bindValue: relationship)
+        return try await queryEdges(sql: sql, bindValue: relationship.rawValue)
     }
     
     /// Delete an edge
@@ -692,7 +839,7 @@ public actor GraphStore {
             throw SwiftMemError.storageError("Failed to prepare edges query: \(lastErrorMessage())")
         }
         
-        sqlite3_bind_text(statement, 1, bindValue, -1, nil)
+        bindValue.withCString { sqlite3_bind_text(statement, 1, $0, -1, SQLITE_TRANSIENT) }
         
         var edges: [Edge] = []
         while sqlite3_step(statement) == SQLITE_ROW {
@@ -755,9 +902,22 @@ public actor GraphStore {
         let updatedAtString = String(cString: sqlite3_column_text(statement, 4))
         
         guard sqlite3_column_text(statement, 5) != nil else {
+            throw SwiftMemError.storageError("Failed to decode node: conversation_date column is NULL")
+        }
+        let conversationDateString = String(cString: sqlite3_column_text(statement, 5))
+        
+        // event_date can be NULL
+        let eventDateString: String? = {
+            if let ptr = sqlite3_column_text(statement, 6) {
+                return String(cString: ptr)
+            }
+            return nil
+        }()
+        
+        guard sqlite3_column_text(statement, 7) != nil else {
             throw SwiftMemError.storageError("Failed to decode node: metadata column is NULL")
         }
-        let metadataString = String(cString: sqlite3_column_text(statement, 5))
+        let metadataString = String(cString: sqlite3_column_text(statement, 7))
         
         guard let id = UUID(uuidString: idString) else {
             throw SwiftMemError.storageError("Failed to decode node: invalid UUID '\(idString)'")
@@ -775,6 +935,15 @@ public actor GraphStore {
             throw SwiftMemError.storageError("Failed to decode node: invalid updated_at '\(updatedAtString)'")
         }
         
+        guard let conversationDate = ISO8601DateFormatter().date(from: conversationDateString) else {
+            throw SwiftMemError.storageError("Failed to decode node: invalid conversation_date '\(conversationDateString)'")
+        }
+        
+        let eventDate: Date? = {
+            guard let dateStr = eventDateString else { return nil }
+            return ISO8601DateFormatter().date(from: dateStr)
+        }()
+        
         let metadata = try decodeMetadata(metadataString)
         
         return Node(
@@ -783,7 +952,9 @@ public actor GraphStore {
             type: type,
             metadata: metadata,
             createdAt: createdAt,
-            updatedAt: updatedAt
+            updatedAt: updatedAt,
+            conversationDate: conversationDate,
+            eventDate: eventDate
         )
     }
     
@@ -791,7 +962,7 @@ public actor GraphStore {
         let idString = String(cString: sqlite3_column_text(statement, 0))
         let fromNodeIdString = String(cString: sqlite3_column_text(statement, 1))
         let toNodeIdString = String(cString: sqlite3_column_text(statement, 2))
-        let relationshipType = String(cString: sqlite3_column_text(statement, 3))
+        let relationshipTypeString = String(cString: sqlite3_column_text(statement, 3))
         let weight = sqlite3_column_double(statement, 4)
         let createdAtString = String(cString: sqlite3_column_text(statement, 5))
         let metadataString = String(cString: sqlite3_column_text(statement, 6))
@@ -802,6 +973,9 @@ public actor GraphStore {
               let createdAt = ISO8601DateFormatter().date(from: createdAtString) else {
             throw SwiftMemError.storageError("Failed to decode edge")
         }
+        
+        // Parse relationship type with fallback to .related
+        let relationshipType = RelationshipType(rawValue: relationshipTypeString) ?? .related
         
         let metadata = try decodeMetadata(metadataString)
         

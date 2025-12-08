@@ -78,10 +78,16 @@ struct SemanticEdgeTestView: View {
             do {
                 testResults.append("Testing semantic edge types...")
                 
-                // Setup
+                // Setup - FORCE clean database
                 let config = SwiftMemConfig.default
                 let dbURL = try config.storageLocation.url(filename: "swiftmem_edgetest.db")
+                
+                // Delete main db and journal files
                 try? FileManager.default.removeItem(at: dbURL)
+                try? FileManager.default.removeItem(at: dbURL.appendingPathExtension("shm"))
+                try? FileManager.default.removeItem(at: dbURL.appendingPathExtension("wal"))
+                
+                testResults.append("🗑️ Cleaned old database files")
                 
                 let graphStore = try await GraphStore.create(config: config)
                 testResults.append("✅ Created GraphStore")
@@ -95,7 +101,20 @@ struct SemanticEdgeTestView: View {
                 try await graphStore.storeNodes([oldNode, newNode, detailNode, derivedNode])
                 testResults.append("✅ Stored 4 test nodes")
                 
+                // Verify nodes exist
+                let storedOld = try await graphStore.getNode(oldNode.id)
+                let storedNew = try await graphStore.getNode(newNode.id)
+                if storedOld != nil && storedNew != nil {
+                    testResults.append("✅ Verified nodes exist in DB")
+                } else {
+                    testResults.append("❌ Nodes not found!")
+                }
+                
                 // Test 1: Updates relationship
+                testResults.append("Creating updates edge...")
+                testResults.append("   From: \(String(newNode.id.value.uuidString.prefix(8)))")
+                testResults.append("   To: \(String(oldNode.id.value.uuidString.prefix(8)))")
+                
                 let updatesEdge = Edge(
                     fromNodeID: newNode.id,
                     toNodeID: oldNode.id,
@@ -136,14 +155,28 @@ struct SemanticEdgeTestView: View {
                 testResults.append("✅ Created 'followedBy' edge")
                 
                 // Verify storage: retrieve edges
-                let allEdges = try await graphStore.getEdges(from: newNode.id)
-                testResults.append("✅ Retrieved \(allEdges.count) edges from newNode")
+                let allEdges = try await graphStore.getOutgoingEdges(from: newNode.id)
+                testResults.append("✅ Retrieved \(allEdges.count) edge(s) from newNode")
                 
-                // Verify edge types
-                if let edge = allEdges.first {
-                    testResults.append("   Edge type: \(edge.relationshipType.rawValue)")
-                    testResults.append("   From: \(String(edge.fromNodeID.value.uuidString.prefix(8)))")
-                    testResults.append("   To: \(String(edge.toNodeID.value.uuidString.prefix(8)))")
+                // Verify edge content
+                if allEdges.count == 1 {
+                    let edge = allEdges[0]
+                    testResults.append("   Type: \(edge.relationshipType.rawValue)")
+                    testResults.append("   From matches: \(edge.fromNodeID == newNode.id ? "✅" : "❌")")
+                    testResults.append("   To matches: \(edge.toNodeID == oldNode.id ? "✅" : "❌")")
+                    testResults.append("   Weight: \(edge.weight)")
+                    
+                    if edge.relationshipType == .updates &&
+                       edge.fromNodeID == newNode.id &&
+                       edge.toNodeID == oldNode.id {
+                        testResults.append("   ✅ Edge data is CORRECT!")
+                    } else {
+                        testResults.append("   ❌ Edge data is WRONG!")
+                    }
+                } else if allEdges.count == 0 {
+                    testResults.append("   ❌ No edges found - query bug!")
+                } else {
+                    testResults.append("   ⚠️ Found \(allEdges.count) edges, expected 1")
                 }
                 
                 // Test all relationship types compile

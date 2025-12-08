@@ -83,14 +83,14 @@ struct SessionManagerTestView: View {
             do {
                 testResults.append("Testing SessionManager...")
                 
-                // Setup
+                // Setup - use unique DB file for each run
+                let timestamp = Int(Date().timeIntervalSince1970)
                 let config = SwiftMemConfig.default
-                let dbURL = try config.storageLocation.url(filename: "swiftmem_sessions.db")
-                try? FileManager.default.removeItem(at: dbURL)
-                try? FileManager.default.removeItem(at: dbURL.appendingPathExtension("shm"))
-                try? FileManager.default.removeItem(at: dbURL.appendingPathExtension("wal"))
                 
-                let graphStore = try await GraphStore.create(config: config)
+                let graphStore = try await GraphStore.create(
+                    config: config,
+                    filename: "swiftmem_sessions_\(timestamp).db"
+                )
                 let sessionManager = SessionManager(graphStore: graphStore)
                 
                 testResults.append("✅ Created SessionManager")

@@ -2,9 +2,8 @@
 //  Types.swift
 //  SwiftMem
 //
-//  Created by Sankritya Thakur on 12/7/25.
+//  Core data structures for graph-based memory system
 //
-
 
 import Foundation
 
@@ -99,11 +98,20 @@ public struct Node: Identifiable, Codable, Equatable {
     /// Custom metadata as JSON-compatible dictionary
     public var metadata: [String: MetadataValue]
     
-    /// When this memory was created
+    /// When this memory was created in the system
     public let createdAt: Date
     
     /// When this memory was last updated
     public var updatedAt: Date
+    
+    /// When the conversation/document actually took place (defaults to createdAt)
+    /// Use this for batch imports where conversation happened in the past
+    public let conversationDate: Date
+    
+    /// When the event/fact being described actually occurred (optional)
+    /// e.g., "Yesterday I went hiking" → eventDate would be yesterday
+    /// Enables temporal reasoning: "What did I do last week?"
+    public let eventDate: Date?
     
     /// Vector embedding of the content (stored separately in VectorStore)
     /// This is just for reference - actual storage happens in VectorStore
@@ -116,6 +124,8 @@ public struct Node: Identifiable, Codable, Equatable {
         metadata: [String: MetadataValue] = [:],
         createdAt: Date = Date(),
         updatedAt: Date = Date(),
+        conversationDate: Date? = nil,  // Defaults to createdAt if nil
+        eventDate: Date? = nil,
         hasEmbedding: Bool = false
     ) {
         self.id = id
@@ -124,11 +134,56 @@ public struct Node: Identifiable, Codable, Equatable {
         self.metadata = metadata
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.conversationDate = conversationDate ?? createdAt  // Backward compatible
+        self.eventDate = eventDate
         self.hasEmbedding = hasEmbedding
     }
 }
 
+// MARK: - Filters
+
+/// Filters for querying nodes
+public enum NodeFilter {
+    case type(MemoryType)
+    case createdAfter(Date)
+    case createdBefore(Date)
+    case contentContains(String)
+    case metadataKey(String)
+    case metadataValue(String, MetadataValue)
+}
+
 // MARK: - Edge (Relationship)
+
+/// Semantic relationship types between memories (inspired by knowledge graphs)
+public enum RelationshipType: String, Codable, CaseIterable {
+    /// Generic relationship
+    case related = "related"
+    
+    /// Knowledge update relationships
+    case updates = "updates"          // New info replaces old (e.g., "color is now green" updates "color is blue")
+    case extends = "extends"          // New info adds detail (e.g., adds job title to employment record)
+    case supersedes = "supersedes"    // Completely replaces (stronger than updates)
+    case derives = "derives"          // Inferred from multiple sources
+    
+    /// Temporal relationships
+    case followedBy = "followed_by"   // Sequential events
+    case precedes = "precedes"        // Opposite of followedBy
+    case causes = "causes"            // Causal relationship
+    
+    /// Hierarchical relationships
+    case partOf = "part_of"           // Component relationship
+    case contains = "contains"        // Opposite of partOf
+    case subtopicOf = "subtopic_of"   // Topic hierarchy
+    
+    /// Associative relationships
+    case similarTo = "similar_to"     // Semantic similarity
+    case oppositeOf = "opposite_of"   // Contrasting concepts
+    case mentions = "mentions"        // References another memory
+    
+    /// Session relationships
+    case sameSession = "same_session" // From same conversation
+    case references = "references"    // Explicit reference to previous memory
+}
 
 /// Represents a relationship between two nodes in the graph
 public struct Edge: Identifiable, Codable, Equatable {
@@ -140,8 +195,8 @@ public struct Edge: Identifiable, Codable, Equatable {
     /// Target node
     public let toNodeID: NodeID
     
-    /// Type of relationship (e.g., "related_to", "caused_by", "followed_by")
-    public let relationshipType: String
+    /// Type of relationship
+    public let relationshipType: RelationshipType
     
     /// Strength of the relationship (0.0 to 1.0)
     public let weight: Double
@@ -156,7 +211,7 @@ public struct Edge: Identifiable, Codable, Equatable {
         id: EdgeID = EdgeID(),
         fromNodeID: NodeID,
         toNodeID: NodeID,
-        relationshipType: String,
+        relationshipType: RelationshipType = .related,
         weight: Double = 1.0,
         createdAt: Date = Date(),
         metadata: [String: MetadataValue] = [:]

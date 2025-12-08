@@ -1,12 +1,4 @@
 //
-//  Session.swift
-//  SwiftMem
-//
-//  Created by Sankritya Thakur on 12/7/25.
-//
-
-
-//
 //  SessionManager.swift
 //  SwiftMem - Session Grouping & Multi-Session Retrieval
 //
@@ -52,7 +44,7 @@ public struct SessionID: Identifiable, Codable, Equatable, Hashable {
 public enum SessionType: String, Codable {
     case chat = "chat"
     case voiceNote = "voice_note"
-    case import = "import"
+    case dataImport = "data_import"
     case batch = "batch"
     case system = "system"
 }
@@ -199,8 +191,8 @@ public actor SessionManager {
             guard let aIndex = a.metadata["message_index"]?.intValue,
                   let bIndex = b.metadata["message_index"]?.intValue else {
                 // Fallback to creation date
-                return orderBy == .chronological ? 
-                    a.createdAt < b.createdAt : 
+                return orderBy == .chronological ?
+                    a.createdAt < b.createdAt :
                     a.createdAt > b.createdAt
             }
             
@@ -243,12 +235,22 @@ public actor SessionManager {
             allNodes = nodes
         }
         
-        // Apply limit
-        if let limit = query.limit {
-            allNodes = Array(allNodes.prefix(limit))
+        // Deduplicate by node ID (in case of overlapping queries)
+        var seen = Set<NodeID>()
+        let deduplicated = allNodes.filter { node in
+            if seen.contains(node.id) {
+                return false
+            }
+            seen.insert(node.id)
+            return true
         }
         
-        return allNodes
+        // Apply limit
+        if let limit = query.limit {
+            return Array(deduplicated.prefix(limit))
+        }
+        
+        return deduplicated
     }
     
     /// Get unique sessions in date range

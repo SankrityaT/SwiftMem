@@ -1,12 +1,4 @@
 //
-//  ExtractedFact.swift
-//  SwiftMem
-//
-//  Created by Sankritya Thakur on 12/7/25.
-//
-
-
-//
 //  EntityExtractor.swift
 //  SwiftMem - Entity Extraction
 //
@@ -236,7 +228,7 @@ public actor EntityExtractor {
             pattern: "my name is ([\\w\\s]+)",
             subjectExtractor: { _ in "name" },
             valueExtractor: { text in
-                guard let regex = try? NSRegularExpression(pattern: "my name is ([\\w\\s]+?)(?:\\.|$)", options: .caseInsensitive),
+                guard let regex = try? NSRegularExpression(pattern: "my name is ([\\w\\s]+?)(?:\\sand\\s|\\.|$)", options: .caseInsensitive),
                       let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
                       let range = Range(match.range(at: 1), in: text) else {
                     return nil
@@ -252,7 +244,7 @@ public actor EntityExtractor {
             subjectExtractor: { text in
                 // Try to infer subject from value
                 let lower = text.lowercased()
-                if lower.contains("developer") || lower.contains("engineer") || 
+                if lower.contains("developer") || lower.contains("engineer") ||
                    lower.contains("designer") || lower.contains("manager") {
                     return "profession"
                 } else if lower.contains("vegetarian") || lower.contains("vegan") {

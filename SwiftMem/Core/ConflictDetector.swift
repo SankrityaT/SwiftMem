@@ -1,12 +1,4 @@
 //
-//  ConflictingMemory.swift
-//  SwiftMem
-//
-//  Created by Sankritya Thakur on 12/7/25.
-//
-
-
-//
 //  ConflictDetector.swift
 //  SwiftMem - Knowledge Update Detection
 //
@@ -107,10 +99,10 @@ public struct ConflictDetectionConfig {
 
 /// Detects conflicts between new and existing memories
 public actor ConflictDetector {
-    private let graphStore: GraphStore
-    private let vectorStore: VectorStore
-    private let embeddingEngine: EmbeddingEngine
-    private let config: ConflictDetectionConfig
+    internal let graphStore: GraphStore
+    internal let vectorStore: VectorStore
+    internal let embeddingEngine: EmbeddingEngine
+    internal let config: ConflictDetectionConfig
     
     public init(
         graphStore: GraphStore,
@@ -178,33 +170,38 @@ public actor ConflictDetector {
         autoLink: Bool = true
     ) async throws {
         for conflict in conflicts {
-            switch conflict.conflictType {
-            case .updates:
-                // New replaces old
-                try await createUpdateEdge(from: conflict.newNode, to: conflict.oldNode)
-                
-            case .extends:
-                // New adds detail to old
-                try await createExtendsEdge(from: conflict.newNode, to: conflict.oldNode)
-                
-            case .supersedes:
-                // New completely replaces old
-                try await createSupersedesEdge(from: conflict.newNode, to: conflict.oldNode)
-                
-            case .duplicate:
-                // Mark as duplicate (link with .similarTo)
-                try await createDuplicateEdge(from: conflict.newNode, to: conflict.oldNode)
-                
-            case .contradicts:
-                // Flag for manual review - don't auto-link
-                break
+            do {
+                switch conflict.conflictType {
+                case .updates:
+                    // New replaces old
+                    try await createUpdateEdge(from: conflict.newNode, to: conflict.oldNode)
+                    
+                case .extends:
+                    // New adds detail to old
+                    try await createExtendsEdge(from: conflict.newNode, to: conflict.oldNode)
+                    
+                case .supersedes:
+                    // New completely replaces old
+                    try await createSupersedesEdge(from: conflict.newNode, to: conflict.oldNode)
+                    
+                case .duplicate:
+                    // Mark as duplicate (link with .similarTo)
+                    try await createDuplicateEdge(from: conflict.newNode, to: conflict.oldNode)
+                    
+                case .contradicts:
+                    // Flag for manual review - don't auto-link
+                    break
+                }
+            } catch {
+                // Rethrow with more context
+                throw SwiftMemError.storageError("Failed to resolve \(conflict.conflictType) conflict: \(error)")
             }
         }
     }
     
     // MARK: - Private Helpers
     
-    private func getCandidates(for newNode: Node) async throws -> [Node] {
+    internal func getCandidates(for newNode: Node) async throws -> [Node] {
         var filters: [NodeFilter] = [.type(newNode.type)]
         
         // Add time window filter if specified
@@ -226,19 +223,8 @@ public actor ConflictDetector {
         oldNode: Node,
         similarity: Float
     ) -> ConflictingMemory? {
-        // Check for duplicate (very high similarity + same content)
-        if similarity > 0.95 && areContentsSimilar(newNode.content, oldNode.content) {
-            return ConflictingMemory(
-                oldNode: oldNode,
-                newNode: newNode,
-                similarity: similarity,
-                conflictType: .duplicate,
-                confidence: similarity,
-                reason: "Nearly identical content"
-            )
-        }
-        
-        // Check for update (same subject, different value)
+        // Check for update FIRST (before duplicate check)
+        // "color is blue" vs "color is green" = high similarity but different values
         if let updateType = detectUpdatePattern(newNode: newNode, oldNode: oldNode) {
             let confidence = calculateUpdateConfidence(
                 similarity: similarity,
@@ -252,6 +238,18 @@ public actor ConflictDetector {
                 conflictType: updateType,
                 confidence: confidence,
                 reason: "Subject match with different values"
+            )
+        }
+        
+        // Check for duplicate (very high similarity + same content)
+        if similarity > 0.95 && areContentsSimilar(newNode.content, oldNode.content) {
+            return ConflictingMemory(
+                oldNode: oldNode,
+                newNode: newNode,
+                similarity: similarity,
+                conflictType: .duplicate,
+                confidence: similarity,
+                reason: "Nearly identical content"
             )
         }
         
@@ -271,21 +269,41 @@ public actor ConflictDetector {
     }
     
     private func detectUpdatePattern(newNode: Node, oldNode: Node) -> ConflictType? {
-        // Simple heuristic: look for common update patterns
         let newLower = newNode.content.lowercased()
         let oldLower = oldNode.content.lowercased()
+        
+        // Check if contents are actually the same (duplicate, not update)
+        if areContentsSimilar(newNode.content, oldNode.content) {
+            return nil // Not an update, it's a duplicate
+        }
         
         // Pattern: "X is Y" where X matches but Y differs
         let updateKeywords = [
             "is", "was", "are", "were",
-            "favorite", "prefers", "likes", "loves",
+            "favorite", "prefers", "likes", "loves", "hates",
             "now", "currently", "today"
         ]
         
+        var foundKeyword = false
         for keyword in updateKeywords {
             if newLower.contains(keyword) && oldLower.contains(keyword) {
-                // Found common structure - likely an update
-                
+                foundKeyword = true
+                break
+            }
+        }
+        
+        // If we found common structure keywords, check if values differ
+        if foundKeyword {
+            // Extract potential values (words after "is", "favorite", etc.)
+            // Simple heuristic: if they share keywords but have different words, it's an update
+            let newWords = Set(newLower.components(separatedBy: .whitespacesAndNewlines))
+            let oldWords = Set(oldLower.components(separatedBy: .whitespacesAndNewlines))
+            
+            let sharedWords = newWords.intersection(oldWords)
+            let differentWords = newWords.symmetricDifference(oldWords)
+            
+            // If they share most structure words but have some different content words = update
+            if sharedWords.count >= 3 && differentWords.count >= 1 {
                 // Check for strong replacement indicators
                 if newLower.contains("now") || newLower.contains("currently") {
                     return .updates
@@ -308,7 +326,7 @@ public actor ConflictDetector {
         let oldLength = oldNode.content.count
         
         // Extension typically has more detail (longer)
-        if newLength > oldLength * 1.5 {
+        if newLength > Int(Double(oldLength) * 1.5) {
             // New contains most of old content
             if newNode.content.lowercased().contains(oldNode.content.lowercased()) {
                 return true
@@ -322,9 +340,18 @@ public actor ConflictDetector {
         let aNorm = a.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
         let bNorm = b.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
         
-        // Check if essentially the same
-        return aNorm == bNorm || 
-               levenshteinDistance(aNorm, bNorm) < 5
+        // Check if exactly the same
+        if aNorm == bNorm {
+            return true
+        }
+        
+        // Only consider similar if edit distance is VERY small (< 3 chars different)
+        // This catches typos but not value changes like "blue" vs "green"
+        let distance = levenshteinDistance(aNorm, bNorm)
+        let maxLength = max(aNorm.count, bNorm.count)
+        
+        // Similar only if < 5% different
+        return distance < 3 && Float(distance) / Float(maxLength) < 0.05
     }
     
     private func calculateUpdateConfidence(
@@ -363,11 +390,12 @@ public actor ConflictDetector {
         
         try await graphStore.storeEdge(edge)
         
-        // Mark old node as superseded in metadata
-        var updatedOld = old
-        updatedOld.metadata["superseded_by"] = .string(new.id.value.uuidString)
-        updatedOld.metadata["superseded_at"] = .string(ISO8601DateFormatter().string(from: Date()))
-        try await graphStore.storeNode(updatedOld)
+        // Mark old node as superseded in metadata using updateNode
+        var newMetadata = old.metadata
+        newMetadata["superseded_by"] = .string(new.id.value.uuidString)
+        newMetadata["superseded_at"] = .string(ISO8601DateFormatter().string(from: Date()))
+        
+        try await graphStore.updateNode(old.id, metadata: newMetadata)
     }
     
     private func createExtendsEdge(from new: Node, to old: Node) async throws {
@@ -399,12 +427,13 @@ public actor ConflictDetector {
         
         try await graphStore.storeEdge(edge)
         
-        // Mark old as completely superseded
-        var updatedOld = old
-        updatedOld.metadata["superseded_by"] = .string(new.id.value.uuidString)
-        updatedOld.metadata["superseded_at"] = .string(ISO8601DateFormatter().string(from: Date()))
-        updatedOld.metadata["active"] = .bool(false)
-        try await graphStore.storeNode(updatedOld)
+        // Mark old as completely superseded using updateNode
+        var newMetadata = old.metadata
+        newMetadata["superseded_by"] = .string(new.id.value.uuidString)
+        newMetadata["superseded_at"] = .string(ISO8601DateFormatter().string(from: Date()))
+        newMetadata["active"] = .bool(false)
+        
+        try await graphStore.updateNode(old.id, metadata: newMetadata)
     }
     
     private func createDuplicateEdge(from new: Node, to old: Node) async throws {
@@ -425,7 +454,7 @@ public actor ConflictDetector {
     
     // MARK: - Utility Functions
     
-    private func cosineSimilarity(_ a: [Float], _ b: [Float]) -> Float {
+    internal func cosineSimilarity(_ a: [Float], _ b: [Float]) -> Float {
         guard a.count == b.count else { return 0.0 }
         
         var dotProduct: Float = 0.0
