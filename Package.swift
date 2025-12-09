@@ -30,7 +30,10 @@ let package = Package(
             path: "SwiftMem",
             exclude: [
                 // Exclude the app entrypoint; the package is a pure library.
-                "SwiftMemApp.swift"
+                "SwiftMemApp.swift",
+                // Exclude test/demo views that use iOS 17+ APIs
+                "Extra Files/ChatMemoryTestView.swift",
+                "Extra Files/OnDeviceCatalystEmbedder.swift"
             ]
         )
     ]
