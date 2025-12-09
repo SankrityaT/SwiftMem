@@ -26,7 +26,8 @@ let package = Package(
     targets: [
         .target(
             name: "SwiftMem",
-            path: "SwiftMem/SwiftMem",
+            // Sources are located in the top-level 'SwiftMem' folder next to this Package.swift
+            path: "SwiftMem",
             exclude: [
                 // Exclude the app entrypoint; the package is a pure library.
                 "SwiftMemApp.swift"
