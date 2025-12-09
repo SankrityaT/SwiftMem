@@ -315,14 +315,14 @@ public enum SessionOrder {
 // MARK: - MetadataValue Extensions
 
 extension MetadataValue {
-    var intValue: Int? {
+    public var intValue: Int? {
         if case .int(let value) = self {
             return value
         }
         return nil
     }
     
-    var stringValue: String? {
+    public var stringValue: String? {
         if case .string(let value) = self {
             return value
         }
