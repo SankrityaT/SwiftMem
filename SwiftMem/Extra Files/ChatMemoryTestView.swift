@@ -7,6 +7,8 @@
 
 import SwiftUI
 
+#if os(iOS)
+
 struct ChatMemoryTestView: View {
     // 🔑 PASTE YOUR GROQ API KEY HERE
     private let groqAPIKey = ""
@@ -575,9 +577,4 @@ struct ChatMemoryTestView: View {
         ChatMemoryTestView()
     }
 
-
-
-
-
-
-    
+#endif

@@ -150,6 +150,80 @@ try await sessionManager.storeMemory(
 let sessionMemories = try await sessionManager.getMemories(fromSession: session.id)
 ```
 
+### High-Level SwiftMemClient (recommended)
+
+If you don't need low-level control, you can use the `SwiftMemClient` facade to wrap all core components behind a simple API:
+
+```swift
+import SwiftMem
+
+// Create your embedder (local or cloud)
+let embedder: some Embedder = yourEmbedder
+
+// Build a ready-to-use SwiftMem client with on-disk storage
+let swiftMem = try await SwiftMemClient.makeOnDisk(
+    config: .default,
+    embedder: embedder
+)
+
+// Store a conversational message as a memory
+try await swiftMem.storeMessage(
+    text: "I started running last week",
+    role: .user
+)
+
+// Later, retrieve context for prompting your model
+let context = try await swiftMem.retrieveContext(
+    for: "How is my running going?",
+    maxResults: 8
+)
+// Use `context.messages` or `context.formatted` when calling your LLM
+```
+
+### Using SwiftMem with OnDeviceCatalyst (local GGUF)
+
+SwiftMem is model-agnostic. To use it with your existing OnDeviceCatalyst GGUF models, add both packages to your app and bridge them via `OnDeviceCatalystEmbedder`:
+
+```swift
+import SwiftMem
+import OnDeviceCatalyst
+
+// 1) Initialize your OnDeviceCatalyst model as usual
+let profile = try ModelProfile.autoDetect(filePath: "/path/to/model.gguf")
+let settings = InstanceSettings.balanced
+let prediction = PredictionConfig.default
+let llama = LlamaInstance(
+    profile: profile,
+    settings: settings,
+    predictionConfig: prediction
+)
+
+// Make sure the instance is initialized before first use
+for await _ in llama.initialize() { /* handle progress if desired */ }
+
+// 2) Wrap it in an Embedder
+let embDim = Int(LlamaBridge.getEmbeddingSize(llamaProfile.model)) // or a known value
+let embedder = OnDeviceCatalystEmbedder(
+    llama: llama,
+    dimensions: embDim,
+    modelIdentifier: profile.name
+)
+
+// 3) Build SwiftMem on top of that embedder
+var config = SwiftMemConfig.default
+config.embeddingDimensions = embDim
+
+let swiftMem = try await SwiftMemClient.makeOnDisk(
+    config: config,
+    embedder: embedder
+)
+
+// 4) Use SwiftMem as your local memory layer
+try await swiftMem.storeMessage(text: userText, role: .user)
+let context = try await swiftMem.retrieveContext(for: userQuestion, maxResults: 8)
+// Pass `context` into your OnDeviceCatalyst generation call
+```
+
 ---
 
 ## Use Cases

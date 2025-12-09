@@ -6,19 +6,67 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXCopyFilesBuildPhase section */
+		26C5A9222EE6B81300CD7DAB /* CopyFiles */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = /usr/share/man/man1/;
+			dstSubfolderSpec = 0;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 1;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
+		26C5A9242EE6B81300CD7DAB /* SwiftMemLongMemEval */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = SwiftMemLongMemEval; sourceTree = BUILT_PRODUCTS_DIR; };
 		26D7ED952EE569D90066F8A6 /* SwiftMem.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SwiftMem.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		26C5A92C2EE6B85B00CD7DAB /* Exceptions for "SwiftMem" folder in "SwiftMemLongMemEval" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Core/Config.swift,
+				Core/ConflictDetector.swift,
+				Core/EmbeddingEngine.swift,
+				Core/EntityExtractor.swift,
+				Core/GraphStore.swift,
+				Core/GroqEmbedder.swift,
+				Core/RetrievalEngine.swift,
+				Core/SessionManager.swift,
+				Core/Types.swift,
+				Core/VectorStore.swift,
+				"Extra Files/LongMemEvalRunner.swift",
+			);
+			target = 26C5A9232EE6B81300CD7DAB /* SwiftMemLongMemEval */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
+		26C5A9252EE6B81300CD7DAB /* SwiftMemLongMemEval */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = SwiftMemLongMemEval;
+			sourceTree = "<group>";
+		};
 		26D7ED972EE569D90066F8A6 /* SwiftMem */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				26C5A92C2EE6B85B00CD7DAB /* Exceptions for "SwiftMem" folder in "SwiftMemLongMemEval" target */,
+			);
 			path = SwiftMem;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		26C5A9212EE6B81300CD7DAB /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		26D7ED922EE569D90066F8A6 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -33,6 +81,7 @@
 			isa = PBXGroup;
 			children = (
 				26D7ED972EE569D90066F8A6 /* SwiftMem */,
+				26C5A9252EE6B81300CD7DAB /* SwiftMemLongMemEval */,
 				26D7ED962EE569D90066F8A6 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -41,6 +90,7 @@
 			isa = PBXGroup;
 			children = (
 				26D7ED952EE569D90066F8A6 /* SwiftMem.app */,
+				26C5A9242EE6B81300CD7DAB /* SwiftMemLongMemEval */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -48,6 +98,28 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		26C5A9232EE6B81300CD7DAB /* SwiftMemLongMemEval */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 26C5A9282EE6B81300CD7DAB /* Build configuration list for PBXNativeTarget "SwiftMemLongMemEval" */;
+			buildPhases = (
+				26C5A9202EE6B81300CD7DAB /* Sources */,
+				26C5A9212EE6B81300CD7DAB /* Frameworks */,
+				26C5A9222EE6B81300CD7DAB /* CopyFiles */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				26C5A9252EE6B81300CD7DAB /* SwiftMemLongMemEval */,
+			);
+			name = SwiftMemLongMemEval;
+			packageProductDependencies = (
+			);
+			productName = SwiftMemLongMemEval;
+			productReference = 26C5A9242EE6B81300CD7DAB /* SwiftMemLongMemEval */;
+			productType = "com.apple.product-type.tool";
+		};
 		26D7ED942EE569D90066F8A6 /* SwiftMem */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 26D7EDA02EE569DA0066F8A6 /* Build configuration list for PBXNativeTarget "SwiftMem" */;
@@ -80,6 +152,9 @@
 				LastSwiftUpdateCheck = 2600;
 				LastUpgradeCheck = 2600;
 				TargetAttributes = {
+					26C5A9232EE6B81300CD7DAB = {
+						CreatedOnToolsVersion = 26.0;
+					};
 					26D7ED942EE569D90066F8A6 = {
 						CreatedOnToolsVersion = 26.0;
 					};
@@ -100,6 +175,7 @@
 			projectRoot = "";
 			targets = (
 				26D7ED942EE569D90066F8A6 /* SwiftMem */,
+				26C5A9232EE6B81300CD7DAB /* SwiftMemLongMemEval */,
 			);
 		};
 /* End PBXProject section */
@@ -115,6 +191,13 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		26C5A9202EE6B81300CD7DAB /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		26D7ED912EE569D90066F8A6 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -125,6 +208,36 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin XCBuildConfiguration section */
+		26C5A9292EE6B81300CD7DAB /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = J94T84BVCP;
+				ENABLE_HARDENED_RUNTIME = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		26C5A92A2EE6B81300CD7DAB /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = J94T84BVCP;
+				ENABLE_HARDENED_RUNTIME = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
 		26D7ED9E2EE569DA0066F8A6 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -332,6 +445,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		26C5A9282EE6B81300CD7DAB /* Build configuration list for PBXNativeTarget "SwiftMemLongMemEval" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				26C5A9292EE6B81300CD7DAB /* Debug */,
+				26C5A92A2EE6B81300CD7DAB /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		26D7ED902EE569D90066F8A6 /* Build configuration list for PBXProject "SwiftMem" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
