@@ -44,7 +44,7 @@ public actor GraphStore {
     private let config: SwiftMemConfig
     
     // Current schema version
-    private static let currentSchemaVersion = 2  // v2: Added conversationDate and eventDate
+    private static let currentSchemaVersion = 3  // v3: Added embeddings table for vector persistence
     
     // MARK: - Initialization
     
@@ -158,6 +158,17 @@ public actor GraphStore {
             );
             """,
             
+            // Embeddings table for vector persistence
+            """
+            CREATE TABLE IF NOT EXISTS embeddings (
+                node_id TEXT PRIMARY KEY,
+                vector BLOB NOT NULL,
+                dimensions INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE
+            );
+            """,
+            
             // Indexes for performance
             """
             CREATE INDEX IF NOT EXISTS idx_nodes_type ON nodes(type);
@@ -245,6 +256,18 @@ public actor GraphStore {
                 ALTER TABLE nodes ADD COLUMN event_date TEXT;
                 """)
             }
+            
+        case 3:
+            // Add embeddings table for vector persistence
+            try execute("""
+            CREATE TABLE IF NOT EXISTS embeddings (
+                node_id TEXT PRIMARY KEY,
+                vector BLOB NOT NULL,
+                dimensions INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE
+            );
+            """)
             
         default:
             break
@@ -988,5 +1011,174 @@ public actor GraphStore {
             createdAt: createdAt,
             metadata: metadata
         )
+    }
+    
+    // MARK: - Embedding Storage
+    
+    /// Store an embedding vector for a node
+    public func storeEmbedding(_ vector: [Float], for nodeId: NodeID) throws {
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+        
+        // Convert Float array to Data (BLOB)
+        let data = vector.withUnsafeBufferPointer { buffer in
+            Data(buffer: buffer)
+        }
+        
+        let sql = """
+        INSERT OR REPLACE INTO embeddings (node_id, vector, dimensions, created_at)
+        VALUES (?, ?, ?, ?);
+        """
+        
+        var statement: OpaquePointer?
+        defer {
+            if statement != nil {
+                sqlite3_finalize(statement)
+            }
+        }
+        
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            let message = String(cString: sqlite3_errmsg(db))
+            throw SwiftMemError.storageError("Failed to prepare embedding insert: \(message)")
+        }
+        
+        sqlite3_bind_text(statement, 1, nodeId.value.uuidString, -1, SQLITE_TRANSIENT)
+        data.withUnsafeBytes { bytes in
+            sqlite3_bind_blob(statement, 2, bytes.baseAddress, Int32(data.count), SQLITE_TRANSIENT)
+        }
+        sqlite3_bind_int(statement, 3, Int32(vector.count))
+        sqlite3_bind_text(statement, 4, timestamp, -1, SQLITE_TRANSIENT)
+        
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            let message = String(cString: sqlite3_errmsg(db))
+            throw SwiftMemError.storageError("Failed to store embedding: \(message)")
+        }
+    }
+    
+    /// Retrieve an embedding vector for a node
+    public func getEmbedding(for nodeId: NodeID) throws -> [Float]? {
+        let sql = "SELECT vector, dimensions FROM embeddings WHERE node_id = ?;"
+        
+        var statement: OpaquePointer?
+        defer {
+            if statement != nil {
+                sqlite3_finalize(statement)
+            }
+        }
+        
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            let message = String(cString: sqlite3_errmsg(db))
+            throw SwiftMemError.storageError("Failed to prepare embedding query: \(message)")
+        }
+        
+        sqlite3_bind_text(statement, 1, nodeId.value.uuidString, -1, SQLITE_TRANSIENT)
+        
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            return nil // No embedding found
+        }
+        
+        let blobPointer = sqlite3_column_blob(statement, 0)
+        let blobSize = sqlite3_column_bytes(statement, 0)
+        let dimensions = Int(sqlite3_column_int(statement, 1))
+        
+        guard let blobPointer = blobPointer else {
+            return nil
+        }
+        
+        // Convert BLOB back to Float array
+        let data = Data(bytes: blobPointer, count: Int(blobSize))
+        let vector = data.withUnsafeBytes { bytes in
+            Array(bytes.bindMemory(to: Float.self))
+        }
+        
+        guard vector.count == dimensions else {
+            throw SwiftMemError.storageError("Embedding dimension mismatch: expected \(dimensions), got \(vector.count)")
+        }
+        
+        return vector
+    }
+    
+    /// Retrieve all embeddings (for loading into VectorStore on startup)
+    public func getAllEmbeddings() throws -> [(nodeId: NodeID, vector: [Float])] {
+        let sql = "SELECT node_id, vector, dimensions FROM embeddings;"
+        
+        var statement: OpaquePointer?
+        defer {
+            if statement != nil {
+                sqlite3_finalize(statement)
+            }
+        }
+        
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            let message = String(cString: sqlite3_errmsg(db))
+            throw SwiftMemError.storageError("Failed to prepare embeddings query: \(message)")
+        }
+        
+        var results: [(nodeId: NodeID, vector: [Float])] = []
+        
+        while sqlite3_step(statement) == SQLITE_ROW {
+            let nodeIdString = String(cString: sqlite3_column_text(statement, 0))
+            let blobPointer = sqlite3_column_blob(statement, 1)
+            let blobSize = sqlite3_column_bytes(statement, 1)
+            
+            guard let nodeIdUUID = UUID(uuidString: nodeIdString),
+                  let blobPointer = blobPointer else {
+                continue
+            }
+            
+            let data = Data(bytes: blobPointer, count: Int(blobSize))
+            let vector = data.withUnsafeBytes { bytes in
+                Array(bytes.bindMemory(to: Float.self))
+            }
+            
+            results.append((nodeId: NodeID(value: nodeIdUUID), vector: vector))
+        }
+        
+        return results
+    }
+    
+    /// Delete an embedding for a node
+    public func deleteEmbedding(for nodeId: NodeID) throws {
+        let sql = "DELETE FROM embeddings WHERE node_id = ?;"
+        
+        var statement: OpaquePointer?
+        defer {
+            if statement != nil {
+                sqlite3_finalize(statement)
+            }
+        }
+        
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            let message = String(cString: sqlite3_errmsg(db))
+            throw SwiftMemError.storageError("Failed to prepare embedding delete: \(message)")
+        }
+        
+        sqlite3_bind_text(statement, 1, nodeId.value.uuidString, -1, SQLITE_TRANSIENT)
+        
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            let message = String(cString: sqlite3_errmsg(db))
+            throw SwiftMemError.storageError("Failed to delete embedding: \(message)")
+        }
+    }
+    
+    /// Get count of stored embeddings
+    public func embeddingCount() throws -> Int {
+        let sql = "SELECT COUNT(*) FROM embeddings;"
+        
+        var statement: OpaquePointer?
+        defer {
+            if statement != nil {
+                sqlite3_finalize(statement)
+            }
+        }
+        
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            return 0
+        }
+        
+        if sqlite3_step(statement) == SQLITE_ROW {
+            return Int(sqlite3_column_int(statement, 0))
+        }
+        
+        return 0
     }
 }
