@@ -460,6 +460,11 @@ public actor GraphStore {
         return nodes
     }
     
+    /// Get all nodes (convenience method for visualization)
+    public func getAllNodes() async throws -> [Node] {
+        return try await getNodes(type: nil, createdAfter: nil, createdBefore: nil, limit: nil, offset: 0)
+    }
+    
     /// Get nodes with flexible filtering (for ConflictDetector)
     public func getNodes(
         filters: [NodeFilter] = [],
