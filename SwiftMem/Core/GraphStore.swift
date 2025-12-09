@@ -835,6 +835,12 @@ public actor GraphStore {
         return (nodeCount, edgeCount, dbSize)
     }
     
+    /// Get database file size in bytes
+    public func getDatabaseSize() async throws -> Int64 {
+        let attributes = try FileManager.default.attributesOfItem(atPath: dbPath.path)
+        return attributes[.size] as? Int64 ?? 0
+    }
+    
     // MARK: - Helper Methods
     
     private func execute(_ sql: String) throws {
