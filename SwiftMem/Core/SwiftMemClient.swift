@@ -70,8 +70,8 @@ public actor SwiftMemClient {
         metadata: [String: MetadataValue] = [:]
     ) async throws -> NodeID {
         var meta = metadata
-        if let sid = sessionId?.rawValue {
-            meta["session_id"] = .string(sid)
+        if let sid = sessionId {
+            meta["session_id"] = .string(sid.value.uuidString)
         }
         meta["role"] = .string(role.rawValue)
         
@@ -88,19 +88,18 @@ public actor SwiftMemClient {
         return node.id
     }
     
-    /// Retrieve relevant context for a query, returning SwiftMem's
-    /// structured ConversationContext for direct use in prompts.
+    /// Retrieve relevant context for a query, returning formatted context string.
     public func retrieveContext(
         for query: String,
         maxResults: Int? = nil,
         strategy: RetrievalStrategy? = nil
-    ) async throws -> ConversationContext {
+    ) async throws -> (formatted: String, nodes: [ScoredNode]) {
         let result = try await retrievalEngine.query(
             query,
             maxResults: maxResults,
             strategy: strategy,
             filters: nil
         )
-        return result.context
+        return (formatted: result.formattedContext, nodes: result.nodes)
     }
 }
