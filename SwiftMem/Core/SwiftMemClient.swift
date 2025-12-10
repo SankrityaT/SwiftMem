@@ -128,6 +128,8 @@ public actor SwiftMemClient {
     }
     
     /// Store memory with automatic conflict detection and resolution.
+    /// Uses embedding similarity (cosine > 0.75) to detect conflicting memories.
+    /// When conflicts are found, creates appropriate edges (updates/extends/supersedes).
     @discardableResult
     public func storeMemoryWithConflictDetection(
         text: String,
@@ -137,11 +139,21 @@ public actor SwiftMemClient {
     ) async throws -> NodeID {
         let node = Node(content: text, type: type, metadata: metadata)
         
-        // Detect conflicts using entity extraction
-        let conflicts = try await conflictDetector.detectConflictsWithEntities(for: node)
+        // Detect conflicts using embedding similarity
+        // This compares the new memory's embedding against all existing memories
+        // and flags those with cosine similarity > 0.75 as potential conflicts
+        let conflicts = try await conflictDetector.detectConflicts(for: node)
         
-        if !conflicts.isEmpty && autoResolve {
-            try await conflictDetector.resolveConflicts(conflicts)
+        if !conflicts.isEmpty {
+            print("🔄 [SwiftMem] Detected \(conflicts.count) conflict(s):")
+            for conflict in conflicts {
+                print("   → \(conflict.conflictType): \"\(conflict.oldNode.content.prefix(50))...\" (sim: \(String(format: "%.2f", conflict.similarity)))")
+            }
+            
+            if autoResolve {
+                try await conflictDetector.resolveConflicts(conflicts)
+                print("   ✅ Auto-resolved conflicts")
+            }
         }
         
         // Store node
