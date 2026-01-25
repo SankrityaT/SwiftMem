@@ -32,6 +32,7 @@ public actor MemoryGraphStore {
     private init(graphStore: GraphStore, memoryGraph: MemoryGraph) {
         self.graphStore = graphStore
         self.memoryGraph = memoryGraph
+        self.db = graphStore.db
     }
     
     // MARK: - Schema
@@ -95,8 +96,23 @@ public actor MemoryGraphStore {
             """
         ]
         
-        // Execute schema creation (would need access to db pointer from GraphStore)
-        // For now, this is a placeholder - we'll integrate with GraphStore's execute method
+        // Execute schema creation using GraphStore's database
+        guard let db = db else {
+            throw SwiftMemError.storageError("Database not initialized")
+        }
+        
+        for schema in schemas {
+            var error: UnsafeMutablePointer<Int8>?
+            let result = sqlite3_exec(db, schema, nil, nil, &error)
+            
+            if result != SQLITE_OK {
+                let message = error != nil ? String(cString: error!) : "Unknown error"
+                sqlite3_free(error)
+                throw SwiftMemError.storageError("Failed to create schema: \(message)")
+            }
+        }
+        
+        print("✅ [MemoryGraphStore] Schema initialized successfully")
     }
     
     // MARK: - Memory Operations
@@ -231,24 +247,241 @@ public actor MemoryGraphStore {
     // MARK: - Persistence Helpers
     
     private func persistMemoryNode(_ node: MemoryNode) async throws {
-        // Convert to SQL INSERT/UPDATE
-        // This would use GraphStore's execute method
-        // Placeholder for now
+        guard let db = db else {
+            throw SwiftMemError.storageError("Database not initialized")
+        }
+        
+        let sql = """
+        INSERT OR REPLACE INTO memory_nodes (
+            id, content, embedding, timestamp, confidence, 
+            is_latest, is_static, container_tags, metadata
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+        """
+        
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+        
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            let message = String(cString: sqlite3_errmsg(db))
+            throw SwiftMemError.storageError("Failed to prepare memory insert: \(message)")
+        }
+        
+        // Bind parameters
+        sqlite3_bind_text(statement, 1, node.id.uuidString, -1, nil)
+        sqlite3_bind_text(statement, 2, node.content, -1, nil)
+        
+        // Bind embedding as blob
+        let embeddingData = node.embedding.withUnsafeBytes { Data($0) }
+        embeddingData.withUnsafeBytes { ptr in
+            sqlite3_bind_blob(statement, 3, ptr.baseAddress, Int32(embeddingData.count), nil)
+        }
+        
+        let timestamp = ISO8601DateFormatter().string(from: node.timestamp)
+        sqlite3_bind_text(statement, 4, timestamp, -1, nil)
+        sqlite3_bind_double(statement, 5, Double(node.confidence))
+        sqlite3_bind_int(statement, 6, node.isLatest ? 1 : 0)
+        sqlite3_bind_int(statement, 7, node.isStatic ? 1 : 0)
+        
+        // Bind container tags as JSON
+        if let tagsData = try? JSONEncoder().encode(node.containerTags),
+           let tagsString = String(data: tagsData, encoding: .utf8) {
+            sqlite3_bind_text(statement, 8, tagsString, -1, nil)
+        } else {
+            sqlite3_bind_null(statement, 8)
+        }
+        
+        // Bind metadata as JSON
+        if let metadataData = try? JSONSerialization.data(withJSONObject: node.metadata),
+           let metadataString = String(data: metadataData, encoding: .utf8) {
+            sqlite3_bind_text(statement, 9, metadataString, -1, nil)
+        } else {
+            sqlite3_bind_null(statement, 9)
+        }
+        
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            let message = String(cString: sqlite3_errmsg(db))
+            throw SwiftMemError.storageError("Failed to insert memory: \(message)")
+        }
     }
     
     private func persistRelationship(from sourceId: UUID, relationship: MemoryRelationship) async throws {
-        // Convert to SQL INSERT
-        // Placeholder for now
+        guard let db = db else {
+            throw SwiftMemError.storageError("Database not initialized")
+        }
+        
+        let sql = """
+        INSERT OR REPLACE INTO memory_relationships (
+            id, source_id, target_id, type, confidence, timestamp
+        ) VALUES (?, ?, ?, ?, ?, ?);
+        """
+        
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+        
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            let message = String(cString: sqlite3_errmsg(db))
+            throw SwiftMemError.storageError("Failed to prepare relationship insert: \(message)")
+        }
+        
+        let relationshipId = UUID().uuidString
+        sqlite3_bind_text(statement, 1, relationshipId, -1, nil)
+        sqlite3_bind_text(statement, 2, sourceId.uuidString, -1, nil)
+        sqlite3_bind_text(statement, 3, relationship.targetId.uuidString, -1, nil)
+        sqlite3_bind_text(statement, 4, relationship.type.rawValue, -1, nil)
+        sqlite3_bind_double(statement, 5, Double(relationship.confidence))
+        
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+        sqlite3_bind_text(statement, 6, timestamp, -1, nil)
+        
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            let message = String(cString: sqlite3_errmsg(db))
+            throw SwiftMemError.storageError("Failed to insert relationship: \(message)")
+        }
     }
     
     private func deleteRelationships(for nodeId: UUID) async throws {
-        // Delete all relationships for a node
-        // Placeholder for now
+        guard let db = db else {
+            throw SwiftMemError.storageError("Database not initialized")
+        }
+        
+        let sql = "DELETE FROM memory_relationships WHERE source_id = ?;"
+        
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+        
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            let message = String(cString: sqlite3_errmsg(db))
+            throw SwiftMemError.storageError("Failed to prepare relationship delete: \(message)")
+        }
+        
+        sqlite3_bind_text(statement, 1, nodeId.uuidString, -1, nil)
+        
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            let message = String(cString: sqlite3_errmsg(db))
+            throw SwiftMemError.storageError("Failed to delete relationships: \(message)")
+        }
     }
     
     private func loadMemoriesIntoGraph() async throws {
-        // Load all memory nodes from database into MemoryGraph
-        // Placeholder for now
+        guard let db = db else { return }
+        
+        let sql = "SELECT id, content, embedding, timestamp, confidence, is_latest, is_static, container_tags, metadata FROM memory_nodes;"
+        
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+        
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            // Table might not exist yet on first run
+            return
+        }
+        
+        var loadedCount = 0
+        while sqlite3_step(statement) == SQLITE_ROW {
+            // Parse node data
+            guard let idString = sqlite3_column_text(statement, 0),
+                  let id = UUID(uuidString: String(cString: idString)),
+                  let contentCString = sqlite3_column_text(statement, 1) else {
+                continue
+            }
+            
+            let content = String(cString: contentCString)
+            
+            // Parse embedding blob
+            var embedding: [Float] = []
+            if let embeddingBlob = sqlite3_column_blob(statement, 2) {
+                let embeddingSize = sqlite3_column_bytes(statement, 2)
+                let embeddingData = Data(bytes: embeddingBlob, count: Int(embeddingSize))
+                embedding = embeddingData.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+            }
+            
+            // Parse timestamp
+            var timestamp = Date()
+            if let timestampCString = sqlite3_column_text(statement, 3) {
+                let timestampString = String(cString: timestampCString)
+                if let parsedDate = ISO8601DateFormatter().date(from: timestampString) {
+                    timestamp = parsedDate
+                }
+            }
+            
+            let confidence = Float(sqlite3_column_double(statement, 4))
+            let isLatest = sqlite3_column_int(statement, 5) == 1
+            let isStatic = sqlite3_column_int(statement, 6) == 1
+            
+            // Parse container tags
+            var containerTags: [String] = []
+            if let tagsCString = sqlite3_column_text(statement, 7) {
+                let tagsString = String(cString: tagsCString)
+                if let tagsData = tagsString.data(using: .utf8),
+                   let tags = try? JSONDecoder().decode([String].self, from: tagsData) {
+                    containerTags = tags
+                }
+            }
+            
+            // Parse metadata
+            var metadata: [String: Any] = [:]
+            if let metadataCString = sqlite3_column_text(statement, 8) {
+                let metadataString = String(cString: metadataCString)
+                if let metadataData = metadataString.data(using: .utf8),
+                   let meta = try? JSONSerialization.jsonObject(with: metadataData) as? [String: Any] {
+                    metadata = meta
+                }
+            }
+            
+            // Create memory node
+            let node = MemoryNode(
+                id: id,
+                content: content,
+                embedding: embedding,
+                timestamp: timestamp,
+                confidence: confidence,
+                isLatest: isLatest,
+                isStatic: isStatic,
+                containerTags: containerTags,
+                metadata: metadata,
+                relationships: [] // Will load relationships separately
+            )
+            
+            await memoryGraph.addNode(node)
+            loadedCount += 1
+        }
+        
+        print("💾 [MemoryGraphStore] Loaded \(loadedCount) memories from database")
+        
+        // Load relationships
+        try await loadRelationshipsIntoGraph()
+    }
+    
+    private func loadRelationshipsIntoGraph() async throws {
+        guard let db = db else { return }
+        
+        let sql = "SELECT source_id, target_id, type, confidence FROM memory_relationships;"
+        
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+        
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            return
+        }
+        
+        var relationshipCount = 0
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let sourceIdString = sqlite3_column_text(statement, 0),
+                  let sourceId = UUID(uuidString: String(cString: sourceIdString)),
+                  let targetIdString = sqlite3_column_text(statement, 1),
+                  let targetId = UUID(uuidString: String(cString: targetIdString)),
+                  let typeCString = sqlite3_column_text(statement, 2) else {
+                continue
+            }
+            
+            let typeString = String(cString: typeCString)
+            let type = RelationType(rawValue: typeString) ?? .relatedTo
+            let confidence = Float(sqlite3_column_double(statement, 3))
+            
+            await memoryGraph.addRelationship(from: sourceId, to: targetId, type: type, confidence: confidence)
+            relationshipCount += 1
+        }
+        
+        print("🔗 [MemoryGraphStore] Loaded \(relationshipCount) relationships from database")
     }
     
     // MARK: - Statistics

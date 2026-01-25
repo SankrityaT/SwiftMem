@@ -39,7 +39,7 @@ public actor GraphStore {
     
     // MARK: - Properties
     
-    private var db: OpaquePointer?
+    internal var db: OpaquePointer?
     private let dbPath: URL
     private let config: SwiftMemConfig
     
