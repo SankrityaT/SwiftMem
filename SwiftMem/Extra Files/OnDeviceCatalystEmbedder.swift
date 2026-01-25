@@ -40,9 +40,11 @@ public struct OnDeviceCatalystEmbedder: Embedder {
     // MARK: - Embedder
     
     public func embed(_ text: String) async throws -> [Float] {
-        // LlamaInstance.embed(text:) is synchronous but potentially heavy;
-        // callers should be prepared to run this off the main thread.
-        return try llama.embed(text: text)
+        // LlamaInstance.embed(text:) is synchronous and CPU-intensive.
+        // Run it on a background thread to avoid blocking.
+        return try await Task.detached(priority: .userInitiated) {
+            try self.llama.embed(text: text)
+        }.value
     }
     
     public func embedBatch(_ texts: [String]) async throws -> [[Float]] {

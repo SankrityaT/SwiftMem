@@ -19,6 +19,8 @@ public actor RetrievalEngine {
     private let vectorStore: VectorStore
     private let embeddingEngine: EmbeddingEngine
     private let config: SwiftMemConfig
+    // Note: MemoryGraphStore integration is optional and only available when that module is included
+    private var memoryGraphStoreEnabled: Bool = false
     
     // MARK: - Initialization
     
@@ -90,6 +92,12 @@ public actor RetrievalEngine {
             scoredNodes = nodes.map { ScoredNode(node: $0, score: 1.0) }
             nodesSearched = nodes.count
         }
+        
+        // Apply exact match boosting (helps with literal recall)
+        scoredNodes = applyExactMatchBoosting(scoredNodes: scoredNodes, query: query)
+        
+        // Re-sort after boosting
+        scoredNodes.sort { $0.score > $1.score }
         
         // Apply filters if provided
         if let filters = filters {
@@ -163,6 +171,59 @@ public actor RetrievalEngine {
         return (scoredNodes, vectorResults.count)
     }
     
+    /// Apply exact match boosting to improve literal recall
+    private func applyExactMatchBoosting(
+        scoredNodes: [ScoredNode],
+        query: String
+    ) -> [ScoredNode] {
+        return scoredNodes.map { scored in
+            let boostedScore = boostForExactMatches(
+                content: scored.node.content,
+                query: query,
+                baseScore: scored.score
+            )
+            return ScoredNode(node: scored.node, score: boostedScore)
+        }
+    }
+    
+    /// Boost score based on exact keyword matches
+    private func boostForExactMatches(content: String, query: String, baseScore: Double) -> Double {
+        let contentLower = content.lowercased()
+        let queryLower = query.lowercased()
+        
+        // Extract keywords (remove stop words)
+        let stopWords = Set(["the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
+                            "of", "with", "by", "from", "as", "is", "was", "are", "were", "be",
+                            "been", "being", "have", "has", "had", "do", "does", "did", "will",
+                            "would", "should", "could", "may", "might", "must", "can", "i", "you",
+                            "he", "she", "it", "we", "they", "my", "your", "his", "her", "its",
+                            "our", "their", "what", "when", "where", "who", "why", "how"])
+        
+        let queryKeywords = queryLower
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty && $0.count > 2 && !stopWords.contains($0) }
+        
+        let contentKeywords = Set(contentLower
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty && $0.count > 2 && !stopWords.contains($0) })
+        
+        // Count exact matches
+        var matchCount = 0
+        for keyword in queryKeywords {
+            if contentKeywords.contains(keyword) {
+                matchCount += 1
+            }
+        }
+        
+        guard queryKeywords.count > 0 else { return baseScore }
+        
+        // Calculate match ratio and apply boost (up to 2x for perfect match)
+        let matchRatio = Double(matchCount) / Double(queryKeywords.count)
+        let boost = 1.0 + matchRatio
+        
+        return baseScore * boost
+    }
+    
     /// Graph-only retrieval (keyword + traversal)
     private func graphOnlyRetrieval(
         query: String,
@@ -225,13 +286,14 @@ public actor RetrievalEngine {
         for result in vectorResults.prefix(5) {
             graphCandidates.insert(result.nodeId)
             
+            // Basic graph traversal
             let neighbors = try await graphStore.getNeighbors(of: result.nodeId)
             for neighbor in neighbors {
                 graphCandidates.insert(neighbor.id)
             }
         }
         
-        // Step 3: Re-rank
+        // Step 3: Re-rank with relationship awareness
         var scoredNodes: [ScoredNode] = []
         var vectorScoreMap: [NodeID: Float] = [:]
         

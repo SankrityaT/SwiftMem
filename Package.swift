@@ -19,21 +19,22 @@ let package = Package(
         )
     ],
     dependencies: [
-        // OnDeviceCatalyst is optional; SwiftMem compiles without it.
-        // If your app also depends on OnDeviceCatalyst, `OnDeviceCatalystEmbedder`
-        // will automatically be available via `#if canImport(OnDeviceCatalyst)`.
+        // OnDeviceCatalyst is optional - only needed if using BGE-Small embeddings
+        // SwiftMem uses NLEmbedding by default (no dependencies required)
     ],
     targets: [
         .target(
             name: "SwiftMem",
-            // Sources are located in the top-level 'SwiftMem' folder next to this Package.swift
+            dependencies: [
+                // No dependencies - uses Apple's built-in NLEmbedding
+            ],
             path: "SwiftMem",
             exclude: [
                 // Exclude the app entrypoint; the package is a pure library.
                 "SwiftMemApp.swift",
-                // Exclude test/demo views that use iOS 17+ APIs
-                "Extra Files/ChatMemoryTestView.swift",
-                "Extra Files/OnDeviceCatalystEmbedder.swift"
+                // Exclude test/demo views
+                "Views/",
+                "Extra Files/"
             ]
         )
     ]

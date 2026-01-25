@@ -6,6 +6,11 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		26DF55C52F234DBD0050ED70 /* OnDeviceCatalyst in Frameworks */ = {isa = PBXBuildFile; productRef = 26DF55C42F234DBD0050ED70 /* OnDeviceCatalyst */; };
+		26DF55C82F234E0F0050ED70 /* OnDeviceCatalyst in Frameworks */ = {isa = PBXBuildFile; productRef = 26DF55C72F234E0F0050ED70 /* OnDeviceCatalyst */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXCopyFilesBuildPhase section */
 		26C5A9222EE6B81300CD7DAB /* CopyFiles */ = {
 			isa = PBXCopyFilesBuildPhase;
@@ -71,6 +76,8 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				26DF55C82F234E0F0050ED70 /* OnDeviceCatalyst in Frameworks */,
+				26DF55C52F234DBD0050ED70 /* OnDeviceCatalyst in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -137,6 +144,8 @@
 			);
 			name = SwiftMem;
 			packageProductDependencies = (
+				26DF55C42F234DBD0050ED70 /* OnDeviceCatalyst */,
+				26DF55C72F234E0F0050ED70 /* OnDeviceCatalyst */,
 			);
 			productName = SwiftMem;
 			productReference = 26D7ED952EE569D90066F8A6 /* SwiftMem.app */;
@@ -169,6 +178,8 @@
 			);
 			mainGroup = 26D7ED8C2EE569D90066F8A6;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 26D7ED962EE569D90066F8A6 /* Products */;
 			projectDirPath = "";
@@ -473,6 +484,17 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		26DF55C42F234DBD0050ED70 /* OnDeviceCatalyst */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = OnDeviceCatalyst;
+		};
+		26DF55C72F234E0F0050ED70 /* OnDeviceCatalyst */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = OnDeviceCatalyst;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 26D7ED8D2EE569D90066F8A6 /* Project object */;
 }

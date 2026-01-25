@@ -673,7 +673,7 @@ Special thanks to:
 - Apple's MLX team for the embedding framework
 - The Swift community for feedback and support
 - Early adopters who helped shape the API
-- The Supermemory team for research inspiration
+- The Swift community for continuous support
 
 ---
 

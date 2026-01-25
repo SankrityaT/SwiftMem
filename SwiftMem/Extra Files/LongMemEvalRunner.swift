@@ -140,6 +140,9 @@ public struct LongMemEvalRunner {
         var precisionSum: Double = 0
         var recallSum: Double = 0
         
+        // Per-category tracking
+        var categoryStats: [String: (total: Int, hit1: Int)] = [:]
+        
         let retrievalEngine = RetrievalEngine(
             graphStore: graphStore,
             vectorStore: vectorStore,
@@ -177,12 +180,20 @@ public struct LongMemEvalRunner {
             let predictedSet = Set(predicted)
             let intersectionCount = gold.intersection(predictedSet).count
             
+            // Track per-category stats
+            let category = instance.questionType
+            var stats = categoryStats[category] ?? (total: 0, hit1: 0)
+            stats.total += 1
+            
             if let first = predicted.first, gold.contains(first) {
                 hit1Count += 1
+                stats.hit1 += 1
             }
             if intersectionCount > 0 {
                 hitKCount += 1
             }
+            
+            categoryStats[category] = stats
             
             let precision: Double
             let recall: Double
@@ -222,6 +233,13 @@ public struct LongMemEvalRunner {
         print(String(format: "  Hit@%d: %.3f", topK, metrics.hitAtK))
         print(String(format: "  Mean precision: %.3f", metrics.meanPrecision))
         print(String(format: "  Mean recall: %.3f", metrics.meanRecall))
+        
+        // Print per-category breakdown
+        print("\nPer-Category Results:")
+        for (category, stats) in categoryStats.sorted(by: { $0.key < $1.key }) {
+            let categoryHit1 = Double(stats.hit1) / Double(stats.total)
+            print(String(format: "  %@: %.1f%% (%d/%d)", category, categoryHit1 * 100, stats.hit1, stats.total))
+        }
         
         return metrics
     }
