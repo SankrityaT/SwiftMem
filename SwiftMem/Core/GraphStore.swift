@@ -97,6 +97,13 @@ public actor GraphStore {
         
         let result = sqlite3_open_v2(path.path, &db, flags, nil)
         
+        // Defer foreign key constraint checks until transaction commit
+        // This allows inserting relationships that reference nodes in the same transaction
+        if result == SQLITE_OK, let db = db {
+            sqlite3_exec(db, "PRAGMA foreign_keys = ON;", nil, nil, nil)
+            sqlite3_exec(db, "PRAGMA defer_foreign_keys = ON;", nil, nil, nil)
+        }
+        
         guard result == SQLITE_OK else {
             let message = db != nil ? String(cString: sqlite3_errmsg(db)) : "Unknown error"
             throw SwiftMemError.storageError("Failed to open database: \(message)")
