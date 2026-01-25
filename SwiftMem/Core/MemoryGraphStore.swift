@@ -425,7 +425,8 @@ public actor MemoryGraphStore {
         defer { sqlite3_finalize(statement) }
         
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
-            // Table might not exist yet on first run
+            let message = String(cString: sqlite3_errmsg(db))
+            print("⚠️ [MemoryGraphStore] Failed to prepare SELECT: \(message)")
             return
         }
         

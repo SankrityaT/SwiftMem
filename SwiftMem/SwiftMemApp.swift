@@ -28,8 +28,13 @@ struct ContentView: View {
                 .fontWeight(.bold)
             
             Text("Memory Graph Library")
-                .font(.subheadline)
+                .font(.title3)
                 .foregroundColor(.secondary)
+            
+            Text("v1.0.0")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .padding(.top, 4)
         }
         .padding()
     }

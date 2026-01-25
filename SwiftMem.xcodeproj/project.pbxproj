@@ -37,7 +37,6 @@
 				Core/SessionManager.swift,
 				Core/Types.swift,
 				Core/VectorStore.swift,
-				"Extra Files/LongMemEvalRunner.swift",
 			);
 			target = 26C5A9232EE6B81300CD7DAB /* SwiftMemLongMemEval */;
 		};
