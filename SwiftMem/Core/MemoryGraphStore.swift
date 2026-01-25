@@ -280,8 +280,10 @@ public actor MemoryGraphStore {
         let sql = """
         INSERT OR REPLACE INTO memory_nodes (
             id, content, embedding, timestamp, confidence, 
-            is_latest, is_static, container_tags, metadata
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+            is_latest, is_static, container_tags,
+            source, importance, access_count, last_accessed, user_confirmed, entities, topics,
+            created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """
         
         var statement: OpaquePointer?
@@ -316,13 +318,39 @@ public actor MemoryGraphStore {
             sqlite3_bind_null(statement, 8)
         }
         
-        // Bind metadata as JSON
-        if let metadataData = try? JSONEncoder().encode(node.metadata),
-           let metadataString = String(data: metadataData, encoding: .utf8) {
-            sqlite3_bind_text(statement, 9, metadataString, -1, nil)
+        // Bind individual metadata fields
+        sqlite3_bind_text(statement, 9, node.metadata.source.rawValue, -1, nil)
+        sqlite3_bind_double(statement, 10, Double(node.metadata.importance))
+        sqlite3_bind_int(statement, 11, Int32(node.metadata.accessCount))
+        
+        if let lastAccessed = node.metadata.lastAccessed {
+            let lastAccessedStr = ISO8601DateFormatter().string(from: lastAccessed)
+            sqlite3_bind_text(statement, 12, lastAccessedStr, -1, nil)
         } else {
-            sqlite3_bind_null(statement, 9)
+            sqlite3_bind_null(statement, 12)
         }
+        
+        sqlite3_bind_int(statement, 13, node.metadata.userConfirmed ? 1 : 0)
+        
+        // Bind entities and topics as JSON arrays
+        if let entitiesData = try? JSONEncoder().encode(node.metadata.entities),
+           let entitiesString = String(data: entitiesData, encoding: .utf8) {
+            sqlite3_bind_text(statement, 14, entitiesString, -1, nil)
+        } else {
+            sqlite3_bind_null(statement, 14)
+        }
+        
+        if let topicsData = try? JSONEncoder().encode(node.metadata.topics),
+           let topicsString = String(data: topicsData, encoding: .utf8) {
+            sqlite3_bind_text(statement, 15, topicsString, -1, nil)
+        } else {
+            sqlite3_bind_null(statement, 15)
+        }
+        
+        // Bind created_at and updated_at
+        let now = ISO8601DateFormatter().string(from: Date())
+        sqlite3_bind_text(statement, 16, timestamp, -1, nil)  // created_at = timestamp
+        sqlite3_bind_text(statement, 17, now, -1, nil)  // updated_at = now
         
         guard sqlite3_step(statement) == SQLITE_DONE else {
             let message = String(cString: sqlite3_errmsg(db))
@@ -391,7 +419,7 @@ public actor MemoryGraphStore {
     private func loadMemoriesIntoGraph() async throws {
         guard let db = db else { return }
         
-        let sql = "SELECT id, content, embedding, timestamp, confidence, is_latest, is_static, container_tags, metadata FROM memory_nodes;"
+        let sql = "SELECT id, content, embedding, timestamp, confidence, is_latest, is_static, container_tags, source, importance, access_count, last_accessed, user_confirmed, entities, topics FROM memory_nodes;"
         
         var statement: OpaquePointer?
         defer { sqlite3_finalize(statement) }
@@ -443,15 +471,51 @@ public actor MemoryGraphStore {
                 }
             }
             
-            // Parse metadata
-            var metadata = MemoryMetadata()
-            if let metadataCString = sqlite3_column_text(statement, 8) {
-                let metadataString = String(cString: metadataCString)
-                if let metadataData = metadataString.data(using: .utf8),
-                   let decodedMetadata = try? JSONDecoder().decode(MemoryMetadata.self, from: metadataData) {
-                    metadata = decodedMetadata
+            // Parse metadata from individual columns
+            var source: MemorySource = .conversation
+            if let sourceCString = sqlite3_column_text(statement, 8) {
+                let sourceString = String(cString: sourceCString)
+                source = MemorySource(rawValue: sourceString) ?? .conversation
+            }
+            
+            let importance = Float(sqlite3_column_double(statement, 9))
+            let accessCount = Int(sqlite3_column_int(statement, 10))
+            
+            var lastAccessed: Date? = nil
+            if let lastAccessedCString = sqlite3_column_text(statement, 11) {
+                let lastAccessedString = String(cString: lastAccessedCString)
+                lastAccessed = ISO8601DateFormatter().date(from: lastAccessedString)
+            }
+            
+            let userConfirmed = sqlite3_column_int(statement, 12) == 1
+            
+            var entities: [String] = []
+            if let entitiesCString = sqlite3_column_text(statement, 13) {
+                let entitiesString = String(cString: entitiesCString)
+                if let entitiesData = entitiesString.data(using: .utf8),
+                   let decodedEntities = try? JSONDecoder().decode([String].self, from: entitiesData) {
+                    entities = decodedEntities
                 }
             }
+            
+            var topics: [String] = []
+            if let topicsCString = sqlite3_column_text(statement, 14) {
+                let topicsString = String(cString: topicsCString)
+                if let topicsData = topicsString.data(using: .utf8),
+                   let decodedTopics = try? JSONDecoder().decode([String].self, from: topicsData) {
+                    topics = decodedTopics
+                }
+            }
+            
+            let metadata = MemoryMetadata(
+                source: source,
+                entities: entities,
+                topics: topics,
+                importance: importance,
+                accessCount: accessCount,
+                lastAccessed: lastAccessed,
+                userConfirmed: userConfirmed
+            )
             
             // Create memory node
             let node = MemoryNode(
