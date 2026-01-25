@@ -415,6 +415,25 @@ public actor SwiftMemAPI {
         )
     }
     
+    /// Get all memories (for visualization/debugging)
+    public func getAllMemories() async throws -> [MemoryResult] {
+        guard let store = memoryGraphStore else {
+            throw SwiftMemError.notInitialized
+        }
+        
+        let nodes = await store.getAllMemories()
+        return nodes.map { node in
+            MemoryResult(
+                id: node.id,
+                content: node.content,
+                score: node.importance,
+                timestamp: node.timestamp,
+                topics: node.topics,
+                entities: node.entities
+            )
+        }
+    }
+    
     // MARK: - Phase 7: Memory Consolidation
     
     /// Consolidate duplicate memories to reduce redundancy
