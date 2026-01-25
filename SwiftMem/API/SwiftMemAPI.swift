@@ -423,14 +423,7 @@ public actor SwiftMemAPI {
         
         let nodes = await store.getAllMemories()
         return nodes.map { node in
-            MemoryResult(
-                id: node.id,
-                content: node.content,
-                score: node.importance,
-                timestamp: node.timestamp,
-                topics: node.topics,
-                entities: node.entities
-            )
+            MemoryResult(memory: node, score: 1.0)
         }
     }
     
