@@ -11,51 +11,26 @@ import SwiftUI
 struct SwiftMemApp: App {
     var body: some Scene {
         WindowGroup {
-            NavigationView {
-                TestSuiteHomeView()
-            }
+            ContentView()
         }
     }
 }
 
-struct TestSuiteHomeView: View {
+struct ContentView: View {
     var body: some View {
-        List {
-            Section(header: Text("SwiftMem Test Suite")) {
-                NavigationLink(destination: ComprehensiveTestView()) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Comprehensive Test Suite")
-                            .font(.headline)
-                        Text("Test all 8 phases: Embeddings, Relationships, Search, Decay, Profiles, Tags, Consolidation, Batch Ops")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                    .padding(.vertical, 4)
-                }
-                
-                NavigationLink(destination: RileyBrooksTestView()) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Riley Brooks Test")
-                            .font(.headline)
-                        Text("Real-world test with 433 memories + Groq AI")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                    .padding(.vertical, 4)
-                }
-                
-                NavigationLink(destination: BenchmarkResultsView()) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Benchmark Results")
-                            .font(.headline)
-                        Text("Performance benchmarks and metrics")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                    .padding(.vertical, 4)
-                }
-            }
+        VStack(spacing: 20) {
+            Image(systemName: "brain.head.profile")
+                .font(.system(size: 80))
+                .foregroundColor(.blue)
+            
+            Text("SwiftMem")
+                .font(.largeTitle)
+                .fontWeight(.bold)
+            
+            Text("Memory Graph Library")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
         }
-        .navigationTitle("SwiftMem Tests")
+        .padding()
     }
 }

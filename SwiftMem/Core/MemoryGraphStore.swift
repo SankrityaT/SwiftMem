@@ -23,6 +23,7 @@ public actor MemoryGraphStore {
         let memoryGraph = MemoryGraph()
         
         let store = MemoryGraphStore(graphStore: graphStore, memoryGraph: memoryGraph)
+        try await store.initializeDatabase()
         try await store.initializeMemorySchema()
         try await store.loadMemoriesIntoGraph()
         
@@ -32,7 +33,10 @@ public actor MemoryGraphStore {
     private init(graphStore: GraphStore, memoryGraph: MemoryGraph) {
         self.graphStore = graphStore
         self.memoryGraph = memoryGraph
-        self.db = graphStore.db
+    }
+    
+    private func initializeDatabase() async {
+        self.db = await graphStore.db
     }
     
     // MARK: - Schema
@@ -291,7 +295,7 @@ public actor MemoryGraphStore {
         }
         
         // Bind metadata as JSON
-        if let metadataData = try? JSONSerialization.data(withJSONObject: node.metadata),
+        if let metadataData = try? JSONEncoder().encode(node.metadata),
            let metadataString = String(data: metadataData, encoding: .utf8) {
             sqlite3_bind_text(statement, 9, metadataString, -1, nil)
         } else {
@@ -418,12 +422,12 @@ public actor MemoryGraphStore {
             }
             
             // Parse metadata
-            var metadata: [String: Any] = [:]
+            var metadata = MemoryMetadata()
             if let metadataCString = sqlite3_column_text(statement, 8) {
                 let metadataString = String(cString: metadataCString)
                 if let metadataData = metadataString.data(using: .utf8),
-                   let meta = try? JSONSerialization.jsonObject(with: metadataData) as? [String: Any] {
-                    metadata = meta
+                   let decodedMetadata = try? JSONDecoder().decode(MemoryMetadata.self, from: metadataData) {
+                    metadata = decodedMetadata
                 }
             }
             
@@ -434,11 +438,11 @@ public actor MemoryGraphStore {
                 embedding: embedding,
                 timestamp: timestamp,
                 confidence: confidence,
+                relationships: [], // Will load relationships separately
+                metadata: metadata,
                 isLatest: isLatest,
                 isStatic: isStatic,
-                containerTags: containerTags,
-                metadata: metadata,
-                relationships: [] // Will load relationships separately
+                containerTags: containerTags
             )
             
             await memoryGraph.addNode(node)
