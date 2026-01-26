@@ -125,8 +125,115 @@ public actor EntityExtractor {
             }
         }
         
-        // If no patterns matched, could use LLM here
-        // TODO: Add LLM extraction for complex cases
+        // If no patterns matched, use simple heuristic extraction
+        // Extract key entities from conversational text
+        if facts.isEmpty {
+            facts.append(contentsOf: extractEntitiesHeuristic(from: content))
+        }
+        
+        return facts
+    }
+    
+    /// Extract entities using enhanced heuristics (fallback when patterns don't match)
+    /// Optimized for local-first privacy approach without cloud LLMs
+    private func extractEntitiesHeuristic(from content: String) -> [ExtractedFact] {
+        var facts: [ExtractedFact] = []
+        let lower = content.lowercased()
+        
+        // Comprehensive topic categories for coaching/personal development context
+        let topicCategories: [String: Set<String>] = [
+            "mental_health": ["stress", "anxiety", "depression", "mental", "emotional", "feelings", "mood", "therapy", "therapist", "counseling"],
+            "relationships": ["family", "relationship", "partner", "spouse", "marriage", "dating", "friendship", "social", "connection", "communication"],
+            "career": ["work", "job", "career", "professional", "business", "project", "meeting", "deadline", "promotion", "salary"],
+            "health": ["health", "fitness", "exercise", "workout", "diet", "nutrition", "sleep", "energy", "physical", "body"],
+            "personal_growth": ["growth", "development", "learning", "skill", "improvement", "progress", "goal", "achievement", "success"],
+            "wellbeing": ["wellbeing", "wellness", "balance", "boundaries", "self-care", "mindfulness", "meditation", "peace", "calm"],
+            "productivity": ["productivity", "focus", "concentration", "efficiency", "time", "management", "organization", "planning"],
+            "creativity": ["creative", "creativity", "art", "design", "writing", "music", "hobby", "passion", "inspiration"],
+            "finance": ["money", "financial", "budget", "savings", "investment", "debt", "income", "expense"],
+            "life_purpose": ["purpose", "meaning", "values", "mission", "vision", "legacy", "impact", "contribution"]
+        ]
+        
+        // Extract topics by category
+        for (category, keywords) in topicCategories {
+            for keyword in keywords {
+                if lower.contains(keyword) {
+                    facts.append(ExtractedFact(
+                        subject: "topic",
+                        value: category,
+                        confidence: 0.8,
+                        extractionMethod: .patternMatch
+                    ))
+                    break // Only add category once
+                }
+            }
+        }
+        
+        // Extract specific keywords that appear (more granular than categories)
+        let words = content.components(separatedBy: .whitespacesAndNewlines)
+        let allTopicWords = topicCategories.values.flatMap { $0 }
+        for word in words {
+            let cleanWord = word.lowercased().trimmingCharacters(in: .punctuationCharacters)
+            if allTopicWords.contains(cleanWord) && cleanWord.count > 3 {
+                facts.append(ExtractedFact(
+                    subject: "keyword",
+                    value: cleanWord,
+                    confidence: 0.7,
+                    extractionMethod: .patternMatch
+                ))
+            }
+        }
+        
+        // Extract capitalized words (potential names, places, organizations)
+        let capitalizedWords = words.filter { word in
+            guard word.count > 2 else { return false }
+            let clean = word.trimmingCharacters(in: .punctuationCharacters)
+            return clean.first?.isUppercase == true && clean.dropFirst().allSatisfy { $0.isLowercase || $0.isNumber }
+        }
+        
+        let excludedWords = Set(["I", "The", "A", "An", "My", "Your", "His", "Her", "Their", "Our", "This", "That", "These", "Those", "Today", "Yesterday", "Tomorrow"])
+        for name in capitalizedWords.prefix(5) {
+            let clean = name.trimmingCharacters(in: .punctuationCharacters)
+            if clean.count > 2 && !excludedWords.contains(clean) {
+                facts.append(ExtractedFact(
+                    subject: "entity",
+                    value: clean,
+                    confidence: 0.6,
+                    extractionMethod: .patternMatch
+                ))
+            }
+        }
+        
+        // Extract emotional indicators
+        let emotions: [String: Float] = [
+            "happy": 0.8, "sad": 0.8, "angry": 0.8, "frustrated": 0.8, "excited": 0.8,
+            "anxious": 0.8, "stressed": 0.8, "calm": 0.8, "peaceful": 0.8, "grateful": 0.8,
+            "overwhelmed": 0.8, "confident": 0.8, "motivated": 0.8, "tired": 0.7, "energized": 0.7
+        ]
+        
+        for (emotion, confidence) in emotions {
+            if lower.contains(emotion) {
+                facts.append(ExtractedFact(
+                    subject: "emotion",
+                    value: emotion,
+                    confidence: confidence,
+                    extractionMethod: .patternMatch
+                ))
+            }
+        }
+        
+        // Extract action verbs (what user is doing/planning)
+        let actionVerbs = ["working", "building", "creating", "learning", "studying", "practicing", "improving", "developing", "planning", "organizing", "managing", "leading", "teaching", "helping", "supporting"]
+        for verb in actionVerbs {
+            if lower.contains(verb) {
+                facts.append(ExtractedFact(
+                    subject: "action",
+                    value: verb,
+                    confidence: 0.6,
+                    extractionMethod: .patternMatch
+                ))
+            }
+        }
         
         return facts
     }

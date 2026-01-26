@@ -130,24 +130,35 @@ public actor SwiftMemAPI {
     
     // MARK: - Helper Functions
     
-    /// Extract topics from content using simple keyword extraction
+    /// Extract topics from content using enhanced keyword extraction
+    /// Optimized for local-first privacy approach
     private func extractTopics(from content: String) -> [String] {
-        let stopWords = Set(["the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with", "by", "from", "as", "is", "was", "are", "were", "be", "been", "being", "have", "has", "had", "do", "does", "did", "will", "would", "could", "should", "may", "might", "must", "can", "i", "you", "he", "she", "it", "we", "they", "my", "your", "his", "her", "its", "our", "their", "this", "that", "these", "those"])
+        let stopWords = Set(["the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with", "by", "from", "as", "is", "was", "are", "were", "be", "been", "being", "have", "has", "had", "do", "does", "did", "will", "would", "could", "should", "may", "might", "must", "can", "i", "you", "he", "she", "it", "we", "they", "my", "your", "his", "her", "its", "our", "their", "this", "that", "these", "those", "said", "asked", "told", "went", "came", "made", "got", "get", "take", "took", "give", "gave", "know", "knew", "think", "thought", "want", "wanted", "need", "needed", "like", "liked", "feel", "felt", "see", "saw", "look", "looked", "come", "going", "able", "lot", "really", "just", "also", "even", "well", "back", "only", "over", "after", "before", "through", "where", "when", "why", "how", "what", "which", "who", "whom", "whose"])
         
         let words = content.lowercased()
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
             .filter { $0.count > 3 && !stopWords.contains($0) }
         
-        // Get unique words that appear more than once or are longer than 6 chars
-        var wordCounts: [String: Int] = [:]
+        // Priority keywords for coaching/personal development
+        let priorityKeywords = Set(["family", "work", "career", "health", "mental", "emotional", "relationship", "goal", "development", "growth", "stress", "anxiety", "balance", "wellness", "fitness", "project", "learning", "skill", "achievement", "success", "purpose", "values", "vision", "coaching", "therapy", "mindfulness", "meditation", "exercise", "nutrition", "sleep", "energy", "productivity", "focus", "creativity", "financial", "budget", "savings"])
+        
+        // Get unique words with scoring
+        var wordScores: [String: Float] = [:]
         for word in words {
-            wordCounts[word, default: 0] += 1
+            // Priority keywords get higher scores
+            if priorityKeywords.contains(word) {
+                wordScores[word, default: 0] += 3.0
+            } else if word.count > 6 {
+                wordScores[word, default: 0] += 1.5
+            } else {
+                wordScores[word, default: 0] += 1.0
+            }
         }
         
-        let topics = wordCounts
-            .filter { $0.value > 1 || $0.key.count > 6 }
+        let topics = wordScores
+            .filter { $0.value >= 1.5 } // Only keep words with decent scores
             .sorted { $0.value > $1.value }
-            .prefix(5)
+            .prefix(8) // Get more topics for better matching
             .map { $0.key }
         
         return Array(topics)
@@ -184,6 +195,16 @@ public actor SwiftMemAPI {
         
         // Extract topics from content (simple keyword extraction)
         let topics = extractTopics(from: content)
+        
+        if !entities.isEmpty || !topics.isEmpty {
+            print("🔍 [SwiftMemAPI] Extracted from '\(String(content.prefix(50)))...':")
+            if !entities.isEmpty {
+                print("  📋 Entities: \(entities.joined(separator: ", "))")
+            }
+            if !topics.isEmpty {
+                print("  🏷️ Topics: \(topics.joined(separator: ", "))")
+            }
+        }
         
         // Create memory node with extracted entities, topics, and temporal grounding
         let memory = MemoryNode(

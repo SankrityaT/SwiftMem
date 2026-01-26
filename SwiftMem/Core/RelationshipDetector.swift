@@ -12,8 +12,9 @@ public actor RelationshipDetector {
     
     private let config: SwiftMemConfig
     
-    // Industry-standard threshold: 72.5% similarity for relationships
-    private let similarityThreshold: Float = 0.725
+    // Lowered threshold for local-first approach: 65% similarity for relationships
+    // Trade-off: privacy-first local AI vs cloud LLM entity extraction
+    private let similarityThreshold: Float = 0.65
     
     // k-NN optimization: only compare with top K most similar memories
     private let maxComparisons: Int = 10
@@ -97,9 +98,9 @@ public actor RelationshipDetector {
         similarity: Float
     ) -> DetectedRelationship? {
         
-        // Very high similarity (>0.80) + temporal ordering = UPDATES
-        // Supermemory: handles contradictions/corrections with version history
-        if similarity > 0.80 && new.timestamp > existing.timestamp {
+        // High similarity (>0.70) + temporal ordering = UPDATES
+        // Local-first: lower threshold for privacy approach
+        if similarity > 0.70 && new.timestamp > existing.timestamp {
             return DetectedRelationship(
                 type: .updates,
                 targetId: existing.id,
@@ -108,26 +109,27 @@ public actor RelationshipDetector {
             )
         }
         
-        // High similarity (>0.75) + shared entities = EXTENDS
-        // Supermemory: supplements existing info without contradiction
-        if similarity > 0.75 {
+        // Medium-high similarity (>0.65) + shared entities/topics = EXTENDS
+        // Local-first: accept heuristic entity extraction
+        if similarity > 0.65 {
             let sharedEntities = !Set(existing.metadata.entities).isDisjoint(with: new.metadata.entities)
-            if sharedEntities && !existing.metadata.entities.isEmpty {
+            let sharedTopics = !Set(existing.metadata.topics).isDisjoint(with: new.metadata.topics)
+            if (sharedEntities && !existing.metadata.entities.isEmpty) || 
+               (sharedTopics && !existing.metadata.topics.isEmpty) {
                 return DetectedRelationship(
                     type: .extends,
                     targetId: existing.id,
                     confidence: similarity,
-                    reason: "High similarity with shared entities"
+                    reason: "Related content with shared context"
                 )
             }
         }
         
-        // Medium similarity (>0.70) + shared topics but different entities = DERIVES
-        // Supermemory: inferred from combining multiple distinct memories
-        if similarity > 0.70 && similarity <= 0.75 {
+        // Medium similarity (>0.60) + shared topics = DERIVES
+        // Local-first: rely on topic extraction for inference
+        if similarity > 0.60 && similarity <= 0.70 {
             let sharedTopics = !Set(existing.metadata.topics).isDisjoint(with: new.metadata.topics)
-            let differentEntities = Set(existing.metadata.entities).isDisjoint(with: new.metadata.entities)
-            if sharedTopics && differentEntities && !existing.metadata.topics.isEmpty {
+            if sharedTopics && !existing.metadata.topics.isEmpty {
                 return DetectedRelationship(
                     type: .derives,
                     targetId: existing.id,
@@ -137,7 +139,7 @@ public actor RelationshipDetector {
             }
         }
         
-        // Good similarity (>0.725) = RELATEDTO
+        // Base similarity (>0.65) = RELATEDTO
         if similarity >= similarityThreshold {
             return DetectedRelationship(
                 type: .relatedTo,
