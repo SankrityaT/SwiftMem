@@ -12,9 +12,9 @@ public actor RelationshipDetector {
     
     private let config: SwiftMemConfig
     
-    // Lowered threshold for local-first approach: 65% similarity for relationships
-    // Trade-off: privacy-first local AI vs cloud LLM entity extraction
-    private let similarityThreshold: Float = 0.65
+    // Lowered threshold for local-first approach: 20% similarity for relationships
+    // Jaccard similarity on short topic/keyword lists needs much lower thresholds
+    private let similarityThreshold: Float = 0.2
     
     // k-NN optimization: only compare with top K most similar memories
     private let maxComparisons: Int = 10
@@ -98,9 +98,9 @@ public actor RelationshipDetector {
         similarity: Float
     ) -> DetectedRelationship? {
         
-        // High similarity (>0.70) + temporal ordering = UPDATES
-        // Local-first: lower threshold for privacy approach
-        if similarity > 0.70 && new.timestamp > existing.timestamp {
+        // High similarity (>0.50) + temporal ordering = UPDATES
+        // Jaccard similarity needs much lower thresholds for short topic/keyword lists
+        if similarity > 0.50 && new.timestamp > existing.timestamp {
             return DetectedRelationship(
                 type: .updates,
                 targetId: existing.id,
@@ -109,9 +109,9 @@ public actor RelationshipDetector {
             )
         }
         
-        // Medium-high similarity (>0.65) + shared entities/topics = EXTENDS
-        // Local-first: accept heuristic entity extraction
-        if similarity > 0.65 {
+        // Medium-high similarity (>0.35) + shared entities/topics = EXTENDS
+        // Lower threshold for keyword/topic overlap
+        if similarity > 0.35 {
             let sharedEntities = !Set(existing.metadata.entities).isDisjoint(with: new.metadata.entities)
             let sharedTopics = !Set(existing.metadata.topics).isDisjoint(with: new.metadata.topics)
             if (sharedEntities && !existing.metadata.entities.isEmpty) || 
@@ -125,21 +125,8 @@ public actor RelationshipDetector {
             }
         }
         
-        // Medium similarity (>0.60) + shared topics = DERIVES
-        // Local-first: rely on topic extraction for inference
-        if similarity > 0.60 && similarity <= 0.70 {
-            let sharedTopics = !Set(existing.metadata.topics).isDisjoint(with: new.metadata.topics)
-            if sharedTopics && !existing.metadata.topics.isEmpty {
-                return DetectedRelationship(
-                    type: .derives,
-                    targetId: existing.id,
-                    confidence: similarity,
-                    reason: "Inferred relationship from shared topics"
-                )
-            }
-        }
-        
-        // Base similarity (>0.65) = RELATEDTO
+        // Medium similarity (>0.20) + shared topics = RELATEDTO
+        // Base threshold for any keyword/topic overlap
         if similarity >= similarityThreshold {
             return DetectedRelationship(
                 type: .relatedTo,
