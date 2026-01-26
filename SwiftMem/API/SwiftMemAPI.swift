@@ -497,6 +497,25 @@ public actor SwiftMemAPI {
         )
     }
     
+    /// Add a relationship between two memories (public API for batch operations)
+    public func addRelationshipToStore(
+        from sourceId: UUID,
+        to targetId: UUID,
+        type: RelationType,
+        confidence: Float
+    ) async throws {
+        guard let store = memoryGraphStore else {
+            throw SwiftMemError.notInitialized
+        }
+        
+        try await store.addRelationship(
+            from: sourceId,
+            to: targetId,
+            type: type,
+            confidence: confidence
+        )
+    }
+    
     /// Get all memories (for visualization/debugging)
     public func getAllMemories() async throws -> [MemoryResult] {
         guard let store = memoryGraphStore else {
