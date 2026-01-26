@@ -61,7 +61,6 @@ import OnDeviceCatalyst
 
 class MemoryService {
     private var swiftMem: SwiftMemClient?
-    private var embeddingModel: LlamaInstance?
     
     func initialize() async throws {
         // 1. Check if user has downloaded a model

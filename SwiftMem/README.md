@@ -14,9 +14,9 @@
 
 **Key Innovation:**
 - Hybrid retrieval that combines semantic search (vector embeddings) with relationship awareness (graph traversal)
-- Model-agnostic design that works with local models (GGUF/CoreML/MLX) and cloud APIs (OpenAI/Claude/etc.)
-- Privacy-first architecture with 100% on-device processing
+- Privacy-first architecture with 100% on-device processing using Apple's NLEmbedding
 - Zero dependencies on cloud services - works completely offline
+- Optional cloud API support for specialized use cases
 
 **Target Users:**
 - iOS developers building AI-powered apps
@@ -62,12 +62,11 @@ User: "I'm stressed about work"
 - **16 semantic relationship types** (updates, extends, supersedes, derives, follows, precedes, etc.)
 - **Automatic memory versioning** with superseded tracking
 
-### 🚀 Model Agnostic
-Works seamlessly with:
+### 🚀 Simple & Private Embeddings
 
-- Local models (GGUF via llama.cpp, CoreML, MLX)
-- Cloud APIs (OpenAI, Anthropic, Google, Cohere)
-- Custom models and inference engines
+- **Apple NLEmbedding** - Built-in, fully private, no setup required
+- 512 dimensions, works offline
+- Custom embedders via the `Embedder` protocol if needed
 
 ### 🔒 Privacy First
 
@@ -180,34 +179,26 @@ let context = try await swiftMem.retrieveContext(
 // Use `context.messages` or `context.formatted` when calling your LLM
 ```
 
-### Using SwiftMem with OnDeviceCatalyst (local GGUF)
+### Custom Embedders
 
-SwiftMem is model-agnostic. To use it with your existing OnDeviceCatalyst GGUF models, add both packages to your app and bridge them via `OnDeviceCatalystEmbedder`:
+SwiftMem uses Apple's NLEmbedding by default. To use a custom embedder, implement the `Embedder` protocol:
 
 ```swift
 import SwiftMem
-import OnDeviceCatalyst
 
-// 1) Initialize your OnDeviceCatalyst model as usual
-let profile = try ModelProfile.autoDetect(filePath: "/path/to/model.gguf")
-let settings = InstanceSettings.balanced
-let prediction = PredictionConfig.default
-let llama = LlamaInstance(
-    profile: profile,
-    settings: settings,
-    predictionConfig: prediction
-)
-
-// Make sure the instance is initialized before first use
-for await _ in llama.initialize() { /* handle progress if desired */ }
-
-// 2) Wrap it in an Embedder
-let embDim = Int(LlamaBridge.getEmbeddingSize(llamaProfile.model)) // or a known value
-let embedder = OnDeviceCatalystEmbedder(
-    llama: llama,
-    dimensions: embDim,
-    modelIdentifier: profile.name
-)
+// Implement the Embedder protocol
+struct MyCustomEmbedder: Embedder {
+    let dimensions: Int
+    let modelIdentifier: String
+    
+    func embed(_ text: String) async throws -> [Float] {
+        // Your embedding logic here
+    }
+    
+    func embedBatch(_ texts: [String]) async throws -> [[Float]] {
+        // Batch embedding logic
+    }
+}
 
 // 3) Build SwiftMem on top of that embedder
 var config = SwiftMemConfig.default

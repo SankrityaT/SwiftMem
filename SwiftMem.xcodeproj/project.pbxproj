@@ -32,7 +32,6 @@
 				Core/EmbeddingEngine.swift,
 				Core/EntityExtractor.swift,
 				Core/GraphStore.swift,
-				Core/GroqEmbedder.swift,
 				Core/RetrievalEngine.swift,
 				Core/SessionManager.swift,
 				Core/Types.swift,

@@ -103,6 +103,31 @@ public actor SwiftMemAPI {
         print("✅ [SwiftMemAPI] Initialization complete - all components wired")
     }
     
+    /// Reset all components and close database connections (for repair/cleanup)
+    public func reset() async {
+        print("🔄 [SwiftMemAPI] Resetting all components...")
+        
+        // Clear all components (this will trigger their deinit and close DB connections)
+        memoryGraphStore = nil
+        userProfileManager = nil
+        memoryExtractor = nil
+        hybridSearch = nil
+        reranker = nil
+        memoryDecay = nil
+        relationshipDetector = nil
+        memoryConsolidator = nil
+        batchOperations = nil
+        graphStore = nil
+        vectorStore = nil
+        embeddingEngine = nil
+        retrievalEngine = nil
+        embedder = nil
+        
+        isInitialized = false
+        
+        print("✅ [SwiftMemAPI] Reset complete - all connections closed")
+    }
+    
     // MARK: - Simple Public API
     
     /// Add a memory (simple one-liner)
