@@ -514,7 +514,7 @@ public actor SwiftMemAPI {
 // MARK: - Public Result Types
 
 /// Memory search result
-public struct MemoryResult {
+public struct MemoryResult: Identifiable {
     public let id: UUID
     public let content: String
     public let score: Float
