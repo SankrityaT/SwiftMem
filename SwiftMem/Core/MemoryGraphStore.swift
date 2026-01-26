@@ -30,6 +30,18 @@ public actor MemoryGraphStore {
         return store
     }
     
+    /// Create with existing GraphStore to prevent double database creation
+    public static func create(config: SwiftMemConfig, graphStore: GraphStore) async throws -> MemoryGraphStore {
+        let memoryGraph = MemoryGraph()
+        
+        let store = MemoryGraphStore(graphStore: graphStore, memoryGraph: memoryGraph)
+        try await store.initializeDatabase()
+        try await store.initializeMemorySchema()
+        try await store.loadMemoriesIntoGraph()
+        
+        return store
+    }
+    
     private init(graphStore: GraphStore, memoryGraph: MemoryGraph) {
         self.graphStore = graphStore
         self.memoryGraph = memoryGraph

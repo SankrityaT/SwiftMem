@@ -63,13 +63,16 @@ public actor SwiftMemAPI {
         updatedConfig.embeddingDimensions = self.embedder!.dimensions
         self.config = updatedConfig
         
+        // Initialize GraphStore ONCE (shared by both old and new components)
+        let sharedGraphStore = try await GraphStore.create(config: updatedConfig)
+        
         // Initialize existing components (for compatibility)
-        self.graphStore = try await GraphStore.create(config: updatedConfig)
+        self.graphStore = sharedGraphStore
         self.vectorStore = VectorStore(config: updatedConfig)
         self.embeddingEngine = EmbeddingEngine(embedder: self.embedder!, config: updatedConfig)
         
-        // Initialize new Memory Graph components
-        self.memoryGraphStore = try await MemoryGraphStore.create(config: updatedConfig)
+        // Initialize new Memory Graph components - REUSE the same GraphStore
+        self.memoryGraphStore = try await MemoryGraphStore.create(config: updatedConfig, graphStore: sharedGraphStore)
         self.userProfileManager = UserProfileManager(memoryGraphStore: memoryGraphStore!)
         self.relationshipDetector = RelationshipDetector(config: updatedConfig)
         self.memoryExtractor = MemoryExtractor(config: updatedConfig, relationshipDetector: relationshipDetector!)
