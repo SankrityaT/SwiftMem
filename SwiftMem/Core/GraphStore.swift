@@ -100,6 +100,8 @@ public actor GraphStore {
         // Defer foreign key constraint checks until transaction commit
         // This allows inserting relationships that reference nodes in the same transaction
         if result == SQLITE_OK, let db = db {
+            // CRITICAL: Use DELETE journal mode instead of WAL to avoid conflicts with SwiftData
+            sqlite3_exec(db, "PRAGMA journal_mode = DELETE;", nil, nil, nil)
             sqlite3_exec(db, "PRAGMA foreign_keys = ON;", nil, nil, nil)
             sqlite3_exec(db, "PRAGMA defer_foreign_keys = ON;", nil, nil, nil)
         }
