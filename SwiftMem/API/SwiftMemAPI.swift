@@ -523,6 +523,8 @@ public struct MemoryResult {
     public let isStatic: Bool
     public let entities: [String]
     public let topics: [String]
+    public let containerTags: [String]
+    public let relationships: [MemoryRelationship]
     
     init(memory: MemoryNode, score: Float) {
         self.id = memory.id
@@ -533,6 +535,8 @@ public struct MemoryResult {
         self.isStatic = memory.isStatic
         self.entities = memory.metadata.entities
         self.topics = memory.metadata.topics
+        self.containerTags = memory.containerTags
+        self.relationships = memory.relationships
     }
 }
 
