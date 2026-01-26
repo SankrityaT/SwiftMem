@@ -128,6 +128,31 @@ public actor SwiftMemAPI {
         print("✅ [SwiftMemAPI] Reset complete - all connections closed")
     }
     
+    // MARK: - Helper Functions
+    
+    /// Extract topics from content using simple keyword extraction
+    private func extractTopics(from content: String) -> [String] {
+        let stopWords = Set(["the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with", "by", "from", "as", "is", "was", "are", "were", "be", "been", "being", "have", "has", "had", "do", "does", "did", "will", "would", "could", "should", "may", "might", "must", "can", "i", "you", "he", "she", "it", "we", "they", "my", "your", "his", "her", "its", "our", "their", "this", "that", "these", "those"])
+        
+        let words = content.lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { $0.count > 3 && !stopWords.contains($0) }
+        
+        // Get unique words that appear more than once or are longer than 6 chars
+        var wordCounts: [String: Int] = [:]
+        for word in words {
+            wordCounts[word, default: 0] += 1
+        }
+        
+        let topics = wordCounts
+            .filter { $0.value > 1 || $0.key.count > 6 }
+            .sorted { $0.value > $1.value }
+            .prefix(5)
+            .map { $0.key }
+        
+        return Array(topics)
+    }
+    
     // MARK: - Simple Public API
     
     /// Add a memory (simple one-liner)
@@ -135,12 +160,14 @@ public actor SwiftMemAPI {
         try await add(content: content, userId: userId, metadata: nil, containerTags: [])
     }
     
-    /// Add a memory with metadata and container tags
+    /// Add a memory with metadata, container tags, and temporal grounding
     public func add(
         content: String,
         userId: String,
         metadata: [String: Any]?,
         containerTags: [String] = [],
+        conversationDate: Date? = nil,
+        eventDate: Date? = nil,
         skipRelationships: Bool = false
     ) async throws {
         guard let embedder = embedder, let store = memoryGraphStore else {
@@ -150,12 +177,23 @@ public actor SwiftMemAPI {
         // Generate embedding
         let embedding = try await embedder.embed(content)
         
-        // Create memory node
+        // Extract entities for better relationship detection (Supermemory approach)
+        let entityExtractor = EntityExtractor()
+        let extractedFacts = await entityExtractor.extractFacts(from: content)
+        let entities = extractedFacts.map { "\($0.subject):\($0.value)" }
+        
+        // Extract topics from content (simple keyword extraction)
+        let topics = extractTopics(from: content)
+        
+        // Create memory node with extracted entities, topics, and temporal grounding
         let memory = MemoryNode(
             content: content,
             embedding: embedding,
+            timestamp: conversationDate ?? Date(),
             metadata: MemoryMetadata(
                 source: .userInput,
+                entities: entities,
+                topics: topics,
                 importance: 0.7
             ),
             containerTags: containerTags
@@ -240,50 +278,41 @@ public actor SwiftMemAPI {
             print("🔍 [SwiftMemAPI] Searching \(activeMemories.count) active memories (filtered \(decayedCount) decayed) for: '\(query)'")
         }
         
-        // Extract keywords from query for boosting
-        let keywords = query.lowercased()
-            .components(separatedBy: CharacterSet.alphanumerics.inverted)
-            .filter { $0.count > 2 }
+        // Use HybridSearch for SOTA retrieval (vector + keyword + BM25)
+        guard let hybridSearch = hybridSearch else {
+            throw SwiftMemError.notInitialized
+        }
+        
+        let hybridResults = try await hybridSearch.search(
+            query: query,
+            queryEmbedding: queryEmbedding,
+            topK: limit * 2,  // Get more results for graph expansion
+            vectorWeight: 0.7,
+            keywordWeight: 0.3
+        )
         
         // Get static memories (core facts) for boosting
         let staticMemories = await store.getStaticMemories()
         let staticIds = Set(staticMemories.map { $0.id })
         print("📌 [SwiftMemAPI] \(staticIds.count) static memories (core facts) available for boosting")
         
-        // Calculate cosine similarity + keyword boost + profile boost for each memory
-        let scored = filteredMemories.compactMap { memory -> (MemoryNode, Float)? in
-            guard !memory.embedding.isEmpty else { return nil }
-            
-            // Base similarity score
-            var similarity = cosineSimilarity(queryEmbedding, memory.embedding)
-            
-            // Keyword boosting - if query keywords appear in content, boost score
-            let contentLower = memory.content.lowercased()
-            var keywordBoost: Float = 0.0
-            for keyword in keywords {
-                if contentLower.contains(keyword) {
-                    keywordBoost += 0.15 // Boost by 0.15 per keyword match
-                }
-            }
+        // Apply static memory boost to hybrid results
+        let boostedResults = hybridResults.map { scoredMemory -> (MemoryNode, Float) in
+            var score = scoredMemory.score
             
             // USER PROFILE BOOST: Static memories (core facts) get priority
-            var profileBoost: Float = 0.0
-            if staticIds.contains(memory.id) {
-                profileBoost = 0.1 // Boost static memories by 0.1
-                print("  📌 Boosting static memory: \(String(memory.content.prefix(40)))...")
+            if staticIds.contains(scoredMemory.memory.id) {
+                score = min(1.0, score + 0.1)
+                print("  📌 Boosting static memory: \(String(scoredMemory.memory.content.prefix(40)))...")
             }
             
-            similarity = min(1.0, similarity + keywordBoost + profileBoost)
-            return (memory, similarity)
+            return (scoredMemory.memory, score)
         }
         
-        // Sort by similarity first (before filtering)
-        let sortedResults = scored.sorted { $0.1 > $1.1 }
-        
-        print("📊 [SwiftMemAPI] Top scores before filtering: \(sortedResults.prefix(5).map { $0.1 })")
+        print("📊 [SwiftMemAPI] Top scores before filtering: \(boostedResults.prefix(5).map { $0.1 })")
         
         // Filter by search threshold and take top results
-        let initialResults = sortedResults
+        let initialResults = boostedResults
             .filter { $0.1 >= searchThreshold }  // Min 0.3 similarity
             .prefix(limit)
         

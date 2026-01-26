@@ -97,8 +97,9 @@ public actor RelationshipDetector {
         similarity: Float
     ) -> DetectedRelationship? {
         
-        // High similarity (>0.85) + temporal ordering = UPDATES
-        if similarity > 0.85 && new.timestamp > existing.timestamp {
+        // Very high similarity (>0.80) + temporal ordering = UPDATES
+        // Supermemory: handles contradictions/corrections with version history
+        if similarity > 0.80 && new.timestamp > existing.timestamp {
             return DetectedRelationship(
                 type: .updates,
                 targetId: existing.id,
@@ -107,15 +108,31 @@ public actor RelationshipDetector {
             )
         }
         
-        // High similarity (>0.80) + shared entities = EXTENDS
-        if similarity > 0.80 {
+        // High similarity (>0.75) + shared entities = EXTENDS
+        // Supermemory: supplements existing info without contradiction
+        if similarity > 0.75 {
             let sharedEntities = !Set(existing.metadata.entities).isDisjoint(with: new.metadata.entities)
-            if sharedEntities {
+            if sharedEntities && !existing.metadata.entities.isEmpty {
                 return DetectedRelationship(
                     type: .extends,
                     targetId: existing.id,
                     confidence: similarity,
                     reason: "High similarity with shared entities"
+                )
+            }
+        }
+        
+        // Medium similarity (>0.70) + shared topics but different entities = DERIVES
+        // Supermemory: inferred from combining multiple distinct memories
+        if similarity > 0.70 && similarity <= 0.75 {
+            let sharedTopics = !Set(existing.metadata.topics).isDisjoint(with: new.metadata.topics)
+            let differentEntities = Set(existing.metadata.entities).isDisjoint(with: new.metadata.entities)
+            if sharedTopics && differentEntities && !existing.metadata.topics.isEmpty {
+                return DetectedRelationship(
+                    type: .derives,
+                    targetId: existing.id,
+                    confidence: similarity,
+                    reason: "Inferred relationship from shared topics"
                 )
             }
         }
