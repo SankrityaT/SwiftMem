@@ -230,7 +230,9 @@ public struct SwiftMemConfig {
 extension SwiftMemConfig {
     
     /// Default configuration - balanced for most use cases
-    public static let `default` = SwiftMemConfig()
+    public static let `default` = SwiftMemConfig(
+        storageLocation: .applicationSupport  // Isolate from SwiftData in Documents
+    )
     
     /// Optimized for mobile devices (lower memory, faster)
     public static let mobile = SwiftMemConfig(

@@ -93,6 +93,10 @@ public actor GraphStore {
     // MARK: - Database Opening
     
     private static func openDatabase(at path: URL, db: inout OpaquePointer?) throws {
+        // Ensure directory exists with proper permissions
+        let directory = path.deletingLastPathComponent()
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: nil)
+        
         let flags = SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX
         
         let result = sqlite3_open_v2(path.path, &db, flags, nil)
@@ -102,6 +106,8 @@ public actor GraphStore {
         if result == SQLITE_OK, let db = db {
             // CRITICAL: Use DELETE journal mode instead of WAL to avoid conflicts with SwiftData
             sqlite3_exec(db, "PRAGMA journal_mode = DELETE;", nil, nil, nil)
+            // Disable synchronous writes for better performance and less corruption risk
+            sqlite3_exec(db, "PRAGMA synchronous = NORMAL;", nil, nil, nil)
             sqlite3_exec(db, "PRAGMA foreign_keys = ON;", nil, nil, nil)
             sqlite3_exec(db, "PRAGMA defer_foreign_keys = ON;", nil, nil, nil)
         }
