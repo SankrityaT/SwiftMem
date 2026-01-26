@@ -130,26 +130,6 @@ public actor MemoryGraphStore {
             }
         }
         
-        // Migrate existing tables to add missing columns
-        let migrations = [
-            "ALTER TABLE memory_nodes ADD COLUMN is_static INTEGER NOT NULL DEFAULT 0;",
-            "ALTER TABLE memory_nodes ADD COLUMN container_tags TEXT;"
-        ]
-        
-        for migration in migrations {
-            var error: UnsafeMutablePointer<Int8>?
-            let result = sqlite3_exec(db, migration, nil, nil, &error)
-            
-            // Ignore "duplicate column" errors (column already exists)
-            if result != SQLITE_OK {
-                let message = error != nil ? String(cString: error!) : "Unknown error"
-                if !message.contains("duplicate column") {
-                    print("⚠️ [MemoryGraphStore] Migration warning: \(message)")
-                }
-                sqlite3_free(error)
-            }
-        }
-        
         print("✅ [MemoryGraphStore] Schema initialized successfully")
     }
     
