@@ -115,7 +115,8 @@ public actor SwiftMemAPI {
         content: String,
         userId: String,
         metadata: [String: Any]?,
-        containerTags: [String] = []
+        containerTags: [String] = [],
+        skipRelationships: Bool = false
     ) async throws {
         guard let embedder = embedder, let store = memoryGraphStore else {
             throw SwiftMemError.notInitialized
@@ -135,14 +136,17 @@ public actor SwiftMemAPI {
             containerTags: containerTags
         )
         
-        // Detect relationships with existing memories
-        let existingMemories = await store.getAllMemories()
-        print("🔗 [SwiftMemAPI] Detecting relationships with \(existingMemories.count) existing memories...")
-        let relationships = try await relationshipDetector?.detectRelationships(
-            newMemory: memory,
-            existingMemories: existingMemories
-        ) ?? []
-        print("🔗 [SwiftMemAPI] Found \(relationships.count) relationships")
+        // Detect relationships with existing memories (skip during bulk operations to prevent DB conflicts)
+        var relationships: [DetectedRelationship] = []
+        if !skipRelationships {
+            let existingMemories = await store.getAllMemories()
+            print("🔗 [SwiftMemAPI] Detecting relationships with \(existingMemories.count) existing memories...")
+            relationships = try await relationshipDetector?.detectRelationships(
+                newMemory: memory,
+                existingMemories: existingMemories
+            ) ?? []
+            print("🔗 [SwiftMemAPI] Found \(relationships.count) relationships")
+        }
         
         // Add relationships to memory
         var memoryWithRelations = memory
