@@ -61,12 +61,7 @@ public struct TemporalContext: Codable, Equatable {
     }
 }
 
-public enum TemporalType: String, Codable {
-    case past = "past"
-    case present = "present"
-    case future = "future"
-    case specific = "specific"
-}
+// Note: TemporalType is defined in AdvancedTypes.swift
 
 // MARK: - Extraction Patterns
 

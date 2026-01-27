@@ -250,11 +250,12 @@ public enum TimeGranularity: String, Codable {
 }
 
 /// Temporal type for a memory
-public enum TemporalType: String, Codable {
+public enum TemporalType: String, Codable, Equatable {
     case past       // Already happened
     case present    // Current/ongoing state
     case future     // Planned/scheduled
     case habitual   // Recurring pattern
+    case specific   // Specific date/time mentioned
 }
 
 // MARK: - Emotional Valence
