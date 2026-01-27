@@ -52,8 +52,8 @@ public actor AdvancedGraphStore {
         case .caches:
             directory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
                 .appendingPathComponent("SwiftMem", isDirectory: true)
-        case .custom(let path):
-            directory = URL(fileURLWithPath: path, isDirectory: true)
+        case .custom(let url):
+            directory = url
         }
 
         // Create directory if needed

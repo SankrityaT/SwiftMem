@@ -90,7 +90,7 @@ public actor GoalMemoryManager {
 
             if relevance > 0.3 {
                 // Classify the relationship type
-                let relationshipType = classifyGoalRelationship(content: content)
+                let relationshipType = classifyGoalRelationship(content)
 
                 // Update the cluster
                 var updatedCluster = goal
