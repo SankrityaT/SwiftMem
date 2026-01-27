@@ -8,6 +8,10 @@
 import Foundation
 import SQLite3
 
+// MARK: - SQLite Constants
+/// SQLITE_TRANSIENT tells SQLite to make its own copy of the string
+private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+
 /// Enhanced GraphStore that persists MemoryNodes with relationships
 /// Integrates with existing GraphStore for backward compatibility
 public actor MemoryGraphStore {
@@ -134,30 +138,65 @@ public actor MemoryGraphStore {
     }
     
     // MARK: - Memory Operations
-    
+
+    /// Execute raw SQL (for transactions)
+    private func execute(_ sql: String) throws {
+        guard let db = db else {
+            throw SwiftMemError.storageError("Database not initialized")
+        }
+        var error: UnsafeMutablePointer<Int8>?
+        let result = sqlite3_exec(db, sql, nil, nil, &error)
+        if result != SQLITE_OK {
+            let message = error != nil ? String(cString: error!) : "Unknown error"
+            sqlite3_free(error)
+            throw SwiftMemError.storageError("SQL execution failed: \(message)")
+        }
+    }
+
     /// Add a memory node
     public func addMemory(_ node: MemoryNode) async throws {
-        // Add to in-memory graph
+        // Add to in-memory graph first
         await memoryGraph.addNode(node)
-        
-        // Persist to database
-        try await persistMemoryNode(node)
-        
-        // Persist relationships
-        for relationship in node.relationships {
-            try await persistRelationship(from: node.id, relationship: relationship)
+
+        // Use transaction for atomic persistence
+        try execute("BEGIN TRANSACTION;")
+
+        do {
+            // Persist to database
+            try await persistMemoryNode(node)
+
+            // Persist relationships
+            for relationship in node.relationships {
+                try await persistRelationship(from: node.id, relationship: relationship)
+            }
+
+            try execute("COMMIT;")
+        } catch {
+            try? execute("ROLLBACK;")
+            throw error
         }
     }
     
     /// Update a memory node
     public func updateMemory(_ node: MemoryNode) async throws {
         await memoryGraph.updateNode(node)
-        try await persistMemoryNode(node)
-        
-        // Delete old relationships and add new ones
-        try await deleteRelationships(for: node.id)
-        for relationship in node.relationships {
-            try await persistRelationship(from: node.id, relationship: relationship)
+
+        // Use transaction for atomic persistence
+        try execute("BEGIN TRANSACTION;")
+
+        do {
+            try await persistMemoryNode(node)
+
+            // Delete old relationships and add new ones
+            try await deleteRelationships(for: node.id)
+            for relationship in node.relationships {
+                try await persistRelationship(from: node.id, relationship: relationship)
+            }
+
+            try execute("COMMIT;")
+        } catch {
+            try? execute("ROLLBACK;")
+            throw error
         }
     }
     
@@ -174,6 +213,32 @@ public actor MemoryGraphStore {
     /// Delete a memory by ID
     public func deleteMemory(_ id: UUID) async {
         await memoryGraph.removeNode(id)
+
+        // Also delete from database
+        guard let db = db else { return }
+
+        // Delete relationships first (foreign key constraints)
+        let deleteRelSql = "DELETE FROM memory_relationships WHERE source_id = ? OR target_id = ?;"
+        var relStatement: OpaquePointer?
+        if sqlite3_prepare_v2(db, deleteRelSql, -1, &relStatement, nil) == SQLITE_OK {
+            let idStr = id.uuidString
+            idStr.withCString { ptr in
+                sqlite3_bind_text(relStatement, 1, ptr, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_text(relStatement, 2, ptr, -1, SQLITE_TRANSIENT)
+            }
+            sqlite3_step(relStatement)
+            sqlite3_finalize(relStatement)
+        }
+
+        // Delete the memory node
+        let deleteNodeSql = "DELETE FROM memory_nodes WHERE id = ?;"
+        var nodeStatement: OpaquePointer?
+        if sqlite3_prepare_v2(db, deleteNodeSql, -1, &nodeStatement, nil) == SQLITE_OK {
+            let idStr = id.uuidString
+            idStr.withCString { sqlite3_bind_text(nodeStatement, 1, $0, -1, SQLITE_TRANSIENT) }
+            sqlite3_step(nodeStatement)
+            sqlite3_finalize(nodeStatement)
+        }
     }
     
     /// Add a relationship between memories
@@ -184,9 +249,18 @@ public actor MemoryGraphStore {
         confidence: Float = 1.0
     ) async throws {
         await memoryGraph.addRelationship(from: sourceId, to: targetId, type: type, confidence: confidence)
-        
+
         let relationship = MemoryRelationship(type: type, targetId: targetId, confidence: confidence)
-        try await persistRelationship(from: sourceId, relationship: relationship)
+
+        // Use transaction for atomic persistence
+        try execute("BEGIN TRANSACTION;")
+        do {
+            try await persistRelationship(from: sourceId, relationship: relationship)
+            try execute("COMMIT;")
+        } catch {
+            try? execute("ROLLBACK;")
+            throw error
+        }
     }
     
     /// Get related memories
@@ -268,82 +342,94 @@ public actor MemoryGraphStore {
         guard let db = db else {
             throw SwiftMemError.storageError("Database not initialized")
         }
-        
+
         let sql = """
         INSERT OR REPLACE INTO memory_nodes (
-            id, content, embedding, timestamp, confidence, 
+            id, content, embedding, timestamp, confidence,
             is_latest, is_static, container_tags,
             source, importance, access_count, last_accessed, user_confirmed, entities, topics,
             created_at, updated_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """
-        
+
         var statement: OpaquePointer?
         defer { sqlite3_finalize(statement) }
-        
+
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
             let message = String(cString: sqlite3_errmsg(db))
             throw SwiftMemError.storageError("Failed to prepare memory insert: \(message)")
         }
-        
-        // Bind parameters
-        sqlite3_bind_text(statement, 1, node.id.uuidString, -1, nil)
-        sqlite3_bind_text(statement, 2, node.content, -1, nil)
-        
-        // Bind embedding as blob
+
+        // CRITICAL: Keep all strings alive during the entire bind + step operation
+        // Using SQLITE_TRANSIENT ensures SQLite copies the string data
+        let idStr = node.id.uuidString
+        let contentStr = node.content
+        let timestampStr = ISO8601DateFormatter().string(from: node.timestamp)
+        let nowStr = ISO8601DateFormatter().string(from: Date())
+        let sourceStr = node.metadata.source.rawValue
+
+        // Pre-encode JSON strings
+        let tagsStr = (try? JSONEncoder().encode(node.containerTags))
+            .flatMap { String(data: $0, encoding: .utf8) }
+        let entitiesStr = (try? JSONEncoder().encode(node.metadata.entities))
+            .flatMap { String(data: $0, encoding: .utf8) }
+        let topicsStr = (try? JSONEncoder().encode(node.metadata.topics))
+            .flatMap { String(data: $0, encoding: .utf8) }
+        let lastAccessedStr = node.metadata.lastAccessed
+            .map { ISO8601DateFormatter().string(from: $0) }
+
+        // Bind parameters using withCString to ensure pointer validity
+        idStr.withCString { sqlite3_bind_text(statement, 1, $0, -1, SQLITE_TRANSIENT) }
+        contentStr.withCString { sqlite3_bind_text(statement, 2, $0, -1, SQLITE_TRANSIENT) }
+
+        // Bind embedding as blob with SQLITE_TRANSIENT
         let embeddingData = node.embedding.withUnsafeBytes { Data($0) }
         embeddingData.withUnsafeBytes { ptr in
-            sqlite3_bind_blob(statement, 3, ptr.baseAddress, Int32(embeddingData.count), nil)
+            sqlite3_bind_blob(statement, 3, ptr.baseAddress, Int32(embeddingData.count), SQLITE_TRANSIENT)
         }
-        
-        let timestamp = ISO8601DateFormatter().string(from: node.timestamp)
-        sqlite3_bind_text(statement, 4, timestamp, -1, nil)
+
+        timestampStr.withCString { sqlite3_bind_text(statement, 4, $0, -1, SQLITE_TRANSIENT) }
         sqlite3_bind_double(statement, 5, Double(node.confidence))
         sqlite3_bind_int(statement, 6, node.isLatest ? 1 : 0)
         sqlite3_bind_int(statement, 7, node.isStatic ? 1 : 0)
-        
+
         // Bind container tags as JSON
-        if let tagsData = try? JSONEncoder().encode(node.containerTags),
-           let tagsString = String(data: tagsData, encoding: .utf8) {
-            sqlite3_bind_text(statement, 8, tagsString, -1, nil)
+        if let tagsStr = tagsStr {
+            tagsStr.withCString { sqlite3_bind_text(statement, 8, $0, -1, SQLITE_TRANSIENT) }
         } else {
             sqlite3_bind_null(statement, 8)
         }
-        
+
         // Bind individual metadata fields
-        sqlite3_bind_text(statement, 9, node.metadata.source.rawValue, -1, nil)
+        sourceStr.withCString { sqlite3_bind_text(statement, 9, $0, -1, SQLITE_TRANSIENT) }
         sqlite3_bind_double(statement, 10, Double(node.metadata.importance))
         sqlite3_bind_int(statement, 11, Int32(node.metadata.accessCount))
-        
-        if let lastAccessed = node.metadata.lastAccessed {
-            let lastAccessedStr = ISO8601DateFormatter().string(from: lastAccessed)
-            sqlite3_bind_text(statement, 12, lastAccessedStr, -1, nil)
+
+        if let lastAccessedStr = lastAccessedStr {
+            lastAccessedStr.withCString { sqlite3_bind_text(statement, 12, $0, -1, SQLITE_TRANSIENT) }
         } else {
             sqlite3_bind_null(statement, 12)
         }
-        
+
         sqlite3_bind_int(statement, 13, node.metadata.userConfirmed ? 1 : 0)
-        
+
         // Bind entities and topics as JSON arrays
-        if let entitiesData = try? JSONEncoder().encode(node.metadata.entities),
-           let entitiesString = String(data: entitiesData, encoding: .utf8) {
-            sqlite3_bind_text(statement, 14, entitiesString, -1, nil)
+        if let entitiesStr = entitiesStr {
+            entitiesStr.withCString { sqlite3_bind_text(statement, 14, $0, -1, SQLITE_TRANSIENT) }
         } else {
             sqlite3_bind_null(statement, 14)
         }
-        
-        if let topicsData = try? JSONEncoder().encode(node.metadata.topics),
-           let topicsString = String(data: topicsData, encoding: .utf8) {
-            sqlite3_bind_text(statement, 15, topicsString, -1, nil)
+
+        if let topicsStr = topicsStr {
+            topicsStr.withCString { sqlite3_bind_text(statement, 15, $0, -1, SQLITE_TRANSIENT) }
         } else {
             sqlite3_bind_null(statement, 15)
         }
-        
+
         // Bind created_at and updated_at
-        let now = ISO8601DateFormatter().string(from: Date())
-        sqlite3_bind_text(statement, 16, timestamp, -1, nil)  // created_at = timestamp
-        sqlite3_bind_text(statement, 17, now, -1, nil)  // updated_at = now
-        
+        timestampStr.withCString { sqlite3_bind_text(statement, 16, $0, -1, SQLITE_TRANSIENT) }
+        nowStr.withCString { sqlite3_bind_text(statement, 17, $0, -1, SQLITE_TRANSIENT) }
+
         guard sqlite3_step(statement) == SQLITE_DONE else {
             let message = String(cString: sqlite3_errmsg(db))
             throw SwiftMemError.storageError("Failed to insert memory: \(message)")
@@ -354,31 +440,35 @@ public actor MemoryGraphStore {
         guard let db = db else {
             throw SwiftMemError.storageError("Database not initialized")
         }
-        
+
         let sql = """
         INSERT OR REPLACE INTO memory_relationships (
             id, source_id, target_id, type, confidence, timestamp
         ) VALUES (?, ?, ?, ?, ?, ?);
         """
-        
+
         var statement: OpaquePointer?
         defer { sqlite3_finalize(statement) }
-        
+
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
             let message = String(cString: sqlite3_errmsg(db))
             throw SwiftMemError.storageError("Failed to prepare relationship insert: \(message)")
         }
-        
-        let relationshipId = UUID().uuidString
-        sqlite3_bind_text(statement, 1, relationshipId, -1, nil)
-        sqlite3_bind_text(statement, 2, sourceId.uuidString, -1, nil)
-        sqlite3_bind_text(statement, 3, relationship.targetId.uuidString, -1, nil)
-        sqlite3_bind_text(statement, 4, relationship.type.rawValue, -1, nil)
+
+        // CRITICAL: Keep all strings alive during the entire bind + step operation
+        let relationshipIdStr = UUID().uuidString
+        let sourceIdStr = sourceId.uuidString
+        let targetIdStr = relationship.targetId.uuidString
+        let typeStr = relationship.type.rawValue
+        let timestampStr = ISO8601DateFormatter().string(from: Date())
+
+        relationshipIdStr.withCString { sqlite3_bind_text(statement, 1, $0, -1, SQLITE_TRANSIENT) }
+        sourceIdStr.withCString { sqlite3_bind_text(statement, 2, $0, -1, SQLITE_TRANSIENT) }
+        targetIdStr.withCString { sqlite3_bind_text(statement, 3, $0, -1, SQLITE_TRANSIENT) }
+        typeStr.withCString { sqlite3_bind_text(statement, 4, $0, -1, SQLITE_TRANSIENT) }
         sqlite3_bind_double(statement, 5, Double(relationship.confidence))
-        
-        let timestamp = ISO8601DateFormatter().string(from: Date())
-        sqlite3_bind_text(statement, 6, timestamp, -1, nil)
-        
+        timestampStr.withCString { sqlite3_bind_text(statement, 6, $0, -1, SQLITE_TRANSIENT) }
+
         guard sqlite3_step(statement) == SQLITE_DONE else {
             let message = String(cString: sqlite3_errmsg(db))
             throw SwiftMemError.storageError("Failed to insert relationship: \(message)")
@@ -389,19 +479,20 @@ public actor MemoryGraphStore {
         guard let db = db else {
             throw SwiftMemError.storageError("Database not initialized")
         }
-        
+
         let sql = "DELETE FROM memory_relationships WHERE source_id = ?;"
-        
+
         var statement: OpaquePointer?
         defer { sqlite3_finalize(statement) }
-        
+
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
             let message = String(cString: sqlite3_errmsg(db))
             throw SwiftMemError.storageError("Failed to prepare relationship delete: \(message)")
         }
-        
-        sqlite3_bind_text(statement, 1, nodeId.uuidString, -1, nil)
-        
+
+        let nodeIdStr = nodeId.uuidString
+        nodeIdStr.withCString { sqlite3_bind_text(statement, 1, $0, -1, SQLITE_TRANSIENT) }
+
         guard sqlite3_step(statement) == SQLITE_DONE else {
             let message = String(cString: sqlite3_errmsg(db))
             throw SwiftMemError.storageError("Failed to delete relationships: \(message)")
