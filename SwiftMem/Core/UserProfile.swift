@@ -129,53 +129,55 @@ public actor UserProfileManager {
     }
     
     // MARK: - Context Assembly
-    
+
     /// Get context for a user (static + recent dynamic)
+    /// Uses container tags to filter by user since profiles are in-memory only
     public func getUserContext(userId: String, maxDynamic: Int = 10) async -> [MemoryNode] {
-        let profile = await getProfile(userId: userId)
-        
+        // Query ALL memories and filter by user tag (profiles are not persisted)
+        let allMemories = await memoryGraphStore.getAllMemories()
+        let userTag = "user:\(userId)"
+
+        // Filter memories that belong to this user
+        let userMemories = allMemories.filter { $0.containerTags.contains(userTag) }
+
         var context: [MemoryNode] = []
-        
-        // Add all static memories
-        for memoryId in profile.staticMemories {
-            if let memory = await memoryGraphStore.getMemory(memoryId) {
-                context.append(memory)
-            }
-        }
-        
-        // Add recent dynamic memories
         var dynamicMemories: [MemoryNode] = []
-        for memoryId in profile.dynamicMemories {
-            if let memory = await memoryGraphStore.getMemory(memoryId) {
+
+        for memory in userMemories {
+            if memory.isStatic {
+                context.append(memory)
+            } else {
                 dynamicMemories.append(memory)
             }
         }
-        
-        // Sort by timestamp (most recent first) and take top N
+
+        // Sort dynamic by timestamp (most recent first) and take top N
         dynamicMemories.sort { $0.timestamp > $1.timestamp }
         context.append(contentsOf: dynamicMemories.prefix(maxDynamic))
-        
+
         return context
     }
     
     /// Get static memories only
     public func getStaticMemories(userId: String) async -> [MemoryNode] {
-        let profile = await getProfile(userId: userId)
-        return await profile.staticMemories.asyncCompactMap { await memoryGraphStore.getMemory($0) }
+        let allMemories = await memoryGraphStore.getAllMemories()
+        let userTag = "user:\(userId)"
+        return allMemories.filter { $0.containerTags.contains(userTag) && $0.isStatic }
     }
-    
+
     /// Get dynamic memories only
     public func getDynamicMemories(userId: String, limit: Int? = nil) async -> [MemoryNode] {
-        let profile = await getProfile(userId: userId)
-        var memories = await profile.dynamicMemories.asyncCompactMap { await memoryGraphStore.getMemory($0) }
-        
+        let allMemories = await memoryGraphStore.getAllMemories()
+        let userTag = "user:\(userId)"
+        var memories = allMemories.filter { $0.containerTags.contains(userTag) && !$0.isStatic }
+
         // Sort by recency
         memories.sort { $0.timestamp > $1.timestamp }
-        
+
         if let limit = limit {
             return Array(memories.prefix(limit))
         }
-        
+
         return memories
     }
 }

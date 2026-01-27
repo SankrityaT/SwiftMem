@@ -206,6 +206,12 @@ public actor SwiftMemAPI {
             }
         }
         
+        // Add userId to container tags for persistence (profiles are in-memory only)
+        var allTags = containerTags
+        if !allTags.contains("user:\(userId)") {
+            allTags.append("user:\(userId)")
+        }
+
         // Create memory node with extracted entities, topics, and temporal grounding
         let memory = MemoryNode(
             content: content,
@@ -217,7 +223,7 @@ public actor SwiftMemAPI {
                 topics: topics,
                 importance: 0.7
             ),
-            containerTags: containerTags
+            containerTags: allTags
         )
         
         // Detect relationships with existing memories (skip during bulk operations to prevent DB conflicts)
