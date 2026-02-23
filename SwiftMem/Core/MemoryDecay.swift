@@ -63,7 +63,7 @@ public actor MemoryDecay {
         
         // Temporal validity check (Supermemory concept)
         // If memory has temporal markers, check if it's still valid
-        if let eventDate = memory.metadata.eventDate {
+        if let eventDate = memory.eventDate {
             let daysSinceEvent = currentDate.timeIntervalSince(eventDate) / 86400
             
             // Events older than 30 days decay faster (unless high importance)
@@ -91,9 +91,12 @@ public actor MemoryDecay {
             // 2. User-confirmed memories
             // 3. High-importance memories (> 0.7)
             // 4. Recently accessed memories (accessed in last 7 days)
-            let recentlyAccessed = memory.metadata.lastAccessDate.map { date in
-                Date().timeIntervalSince(date) < (7 * 24 * 3600)
-            } ?? false
+            let recentlyAccessed: Bool = {
+                if case .date(let lastAccess) = memory.metadata["lastAccessDate"] {
+                    return Date().timeIntervalSince(lastAccess) < (7 * 24 * 3600)
+                }
+                return false
+            }()
             
             let shouldPreserve = memory.isStatic ||
                                 memory.metadata.userConfirmed ||
