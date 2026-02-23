@@ -59,19 +59,7 @@ public actor MemoryDecay {
         
         // Calculate decay with exponential falloff
         let ageFactor = exp(-decayRate * Float(daysSinceCreation))
-        var decayedConfidence = memory.confidence * ageFactor + accessBoost + importanceBoost
-        
-        // Temporal validity check (Supermemory concept)
-        // If memory has temporal markers, check if it's still valid
-        if let eventDate = memory.eventDate {
-            let daysSinceEvent = currentDate.timeIntervalSince(eventDate) / 86400
-            
-            // Events older than 30 days decay faster (unless high importance)
-            if daysSinceEvent > 30 && memory.metadata.importance < 0.7 {
-                let temporalDecay = exp(-0.1 * Float(daysSinceEvent - 30))
-                decayedConfidence *= temporalDecay
-            }
-        }
+        let decayedConfidence = memory.confidence * ageFactor + accessBoost + importanceBoost
         
         return max(min(decayedConfidence, 1.0), 0.0)
     }
@@ -92,7 +80,7 @@ public actor MemoryDecay {
             // 3. High-importance memories (> 0.7)
             // 4. Recently accessed memories (accessed in last 7 days)
             let recentlyAccessed: Bool = {
-                if case .date(let lastAccess) = memory.metadata["lastAccessDate"] {
+                if let lastAccess = memory.metadata.lastAccessed {
                     return Date().timeIntervalSince(lastAccess) < (7 * 24 * 3600)
                 }
                 return false
