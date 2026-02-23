@@ -616,6 +616,85 @@ public actor SwiftMemAPI {
             try await store.updateMemory(memory)
         }
     }
+    
+    // MARK: - Dynamic Profile (Supermemory-style RAM Layer)
+    
+    /// Get dynamic context string for AI prompts (RAM-like instant access)
+    /// This is the "currently working on" / "recent endeavors" layer
+    public func getDynamicContext(userId: String, limit: Int = 5) async -> String {
+        guard let profileManager = userProfileManager else {
+            return ""
+        }
+        
+        return await profileManager.getDynamicContextString(userId: userId, limit: limit)
+    }
+    
+    /// Update dynamic context (e.g., "currently working on X")
+    public func updateDynamicContext(
+        userId: String,
+        content: String,
+        category: DynamicContextCategory,
+        importance: Float = 0.7
+    ) async {
+        guard let profileManager = userProfileManager else {
+            return
+        }
+        
+        await profileManager.updateDynamicContext(
+            userId: userId,
+            content: content,
+            category: category,
+            importance: importance
+        )
+    }
+    
+    /// Auto-extract dynamic context from recent memories
+    /// Call this periodically (e.g., after each session) to keep dynamic context fresh
+    public func extractDynamicContext(userId: String) async {
+        guard let profileManager = userProfileManager else {
+            return
+        }
+        
+        await profileManager.extractDynamicContext(userId: userId)
+    }
+    
+    /// Get user profile (static + dynamic context)
+    public func getUserProfile(userId: String) async -> UserProfile? {
+        guard let profileManager = userProfileManager else {
+            return nil
+        }
+        
+        return await profileManager.getProfile(userId: userId)
+    }
+    
+    /// Clear profile cache (useful for memory pressure)
+    public func clearProfileCache() async {
+        guard let profileManager = userProfileManager else {
+            return
+        }
+        
+        await profileManager.clearCache()
+    }
+    
+    // MARK: - Memory Decay Control
+    
+    /// Manually trigger decay process (normally runs automatically every 24h)
+    public func processDecay() async throws {
+        guard let decay = memoryDecay else {
+            throw SwiftMemError.notInitialized
+        }
+        
+        try await decay.processDecay()
+    }
+    
+    /// Manually trigger memory pruning (normally runs automatically every 7 days)
+    public func pruneMemories(threshold: Float = 0.1) async throws -> Int {
+        guard let decay = memoryDecay else {
+            throw SwiftMemError.notInitialized
+        }
+        
+        return try await decay.pruneMemories(threshold: threshold)
+    }
 }
 
 // MARK: - Public Result Types
