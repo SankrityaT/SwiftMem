@@ -20,6 +20,11 @@ public struct MemoryNode: Identifiable, Codable, Equatable {
     public var isStatic: Bool  // Core facts vs episodic memories
     public var containerTags: [String]  // Session/topic/category tags for filtering
     
+    /// When the event/fact being described actually occurred (optional)
+    /// e.g., "Yesterday I went hiking" → eventDate would be yesterday
+    /// Enables temporal reasoning: "What did I do last week?"
+    public let eventDate: Date?
+    
     public init(
         id: UUID = UUID(),
         content: String,
@@ -30,7 +35,8 @@ public struct MemoryNode: Identifiable, Codable, Equatable {
         metadata: MemoryMetadata = MemoryMetadata(),
         isLatest: Bool = true,
         isStatic: Bool = false,
-        containerTags: [String] = []
+        containerTags: [String] = [],
+        eventDate: Date? = nil
     ) {
         self.id = id
         self.content = content
@@ -42,6 +48,7 @@ public struct MemoryNode: Identifiable, Codable, Equatable {
         self.isLatest = isLatest
         self.isStatic = isStatic
         self.containerTags = containerTags
+        self.eventDate = eventDate
     }
 }
 
