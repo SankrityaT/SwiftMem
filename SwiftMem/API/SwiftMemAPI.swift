@@ -285,6 +285,7 @@ public actor SwiftMemAPI {
         // SEARCH THRESHOLD: Use 0.3 for broad search
         // 0.6 is too strict for initial queries
         let searchThreshold: Float = 0.3
+        
         let activeMemories = allMemories.filter { memory in
             let confidence = memory.effectiveConfidence()
             return confidence >= confidenceThreshold
@@ -674,6 +675,16 @@ public actor SwiftMemAPI {
         }
         
         await profileManager.clearCache()
+    }
+    
+    // MARK: - Clear All Memories
+    
+    /// Clear all memories and relationships (for benchmarks/testing)
+    public func clearAll() async throws {
+        guard let store = memoryGraphStore else {
+            throw SwiftMemError.notInitialized
+        }
+        try await store.clearAll()
     }
     
     // MARK: - Memory Decay Control

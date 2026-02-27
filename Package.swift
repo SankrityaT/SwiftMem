@@ -16,6 +16,10 @@ let package = Package(
         .library(
             name: "SwiftMem",
             targets: ["SwiftMem"]
+        ),
+        .executable(
+            name: "LongMemEval",
+            targets: ["LongMemEval"]
         )
     ],
     dependencies: [
@@ -36,6 +40,11 @@ let package = Package(
                 "Views/",
                 "Extra Files/"
             ]
+        ),
+        .executableTarget(
+            name: "LongMemEval",
+            dependencies: ["SwiftMem"],
+            path: "Sources/LongMemEval"
         )
     ]
 )

@@ -228,6 +228,14 @@ public actor MemoryGraph {
         return nodes.values.filter { !$0.isStatic }
     }
     
+    // MARK: - Bulk Operations
+    
+    /// Remove all nodes and relationships from the graph
+    public func clearAll() {
+        nodes.removeAll()
+        adjacencyList.removeAll()
+    }
+    
     // MARK: - Statistics
     
     public func nodeCount() -> Int {

@@ -658,6 +658,18 @@ public actor MemoryGraphStore {
         print("🔗 [MemoryGraphStore] Loaded \(relationshipCount) relationships from database")
     }
     
+    // MARK: - Bulk Operations
+    
+    /// Clear all memories and relationships from both in-memory graph and database
+    public func clearAll() async throws {
+        await memoryGraph.clearAll()
+        
+        guard let db = db else { return }
+        try execute("DELETE FROM memory_relationships;")
+        try execute("DELETE FROM memory_nodes;")
+        print("🗑️ [MemoryGraphStore] Cleared all memories and relationships")
+    }
+    
     // MARK: - Statistics
     
     public func getStatistics() async -> (nodes: Int, relationships: Int, avgDegree: Double) {

@@ -258,6 +258,19 @@ public enum TemporalType: String, Codable, Equatable {
     case specific   // Specific date/time mentioned
 }
 
+/// Temporal context for a fact
+public struct TemporalContext: Codable, Equatable {
+    public let type: TemporalType
+    public let date: Date?
+    public let text: String
+    
+    public init(type: TemporalType, date: Date? = nil, text: String) {
+        self.type = type
+        self.date = date
+        self.text = text
+    }
+}
+
 // MARK: - Emotional Valence
 
 /// Emotional information extracted from memory

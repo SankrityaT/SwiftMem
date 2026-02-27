@@ -48,20 +48,7 @@ public enum ExtractionMethod: String, Codable {
     case hybrid = "hybrid"
 }
 
-/// Temporal context for a fact
-public struct TemporalContext: Codable, Equatable {
-    public let type: TemporalType
-    public let date: Date?
-    public let text: String
-    
-    public init(type: TemporalType, date: Date? = nil, text: String) {
-        self.type = type
-        self.date = date
-        self.text = text
-    }
-}
-
-// Note: TemporalType is defined in AdvancedTypes.swift
+// Note: TemporalType and TemporalContext are defined in AdvancedTypes.swift
 
 // MARK: - Extraction Patterns
 

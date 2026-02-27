@@ -84,10 +84,13 @@ public actor HybridSearch {
         let queryTerms = tokenize(query)
         let allMemories = await memoryGraphStore.getAllMemories()
         
+        let totalDocs = allMemories.count
+        let avgDocLength = allMemories.isEmpty ? 50.0 : Float(allMemories.reduce(0) { $0 + tokenize($1.content).count }) / Float(totalDocs)
+        
         var scored: [ScoredMemory] = []
         
         for memory in allMemories {
-            let score = bm25Score(queryTerms: queryTerms, document: memory.content)
+            let score = bm25Score(queryTerms: queryTerms, document: memory.content, totalDocs: totalDocs, avgDocLength: avgDocLength)
             scored.append(ScoredMemory(memory: memory, score: score))
         }
         
@@ -96,13 +99,13 @@ public actor HybridSearch {
     }
     
     /// BM25 scoring algorithm
-    private func bm25Score(queryTerms: [String], document: String) -> Float {
+    private func bm25Score(queryTerms: [String], document: String, totalDocs: Int = 100, avgDocLength: Float = 50.0) -> Float {
         let docTerms = tokenize(document)
         let docLength = Float(docTerms.count)
-        let avgDocLength: Float = 50.0 // Approximate
         
         let k1: Float = 1.5
         let b: Float = 0.75
+        let n = Float(max(totalDocs, 1))
         
         var score: Float = 0.0
         
@@ -110,7 +113,9 @@ public actor HybridSearch {
             let termFreq = Float(docTerms.filter { $0 == term }.count)
             
             if termFreq > 0 {
-                let idf = log((1.0 + Float(1)) / (termFreq + 1.0))
+                // Proper BM25 IDF: log((N - df + 0.5) / (df + 0.5) + 1)
+                // Using df=1 as approximation since we score per-document
+                let idf = log((n - 1.0 + 0.5) / (1.0 + 0.5) + 1.0)
                 let numerator = termFreq * (k1 + 1.0)
                 let denominator = termFreq + k1 * (1.0 - b + b * (docLength / avgDocLength))
                 
