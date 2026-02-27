@@ -8,7 +8,7 @@
 import Foundation
 
 /// User profile separating static (core facts) from dynamic (episodic) memories
-/// Enhanced with dynamic context tracking (Supermemory-style)
+/// Enhanced with dynamic context tracking for personalized memory management
 public struct UserProfile: Codable, Equatable {
     public let userId: String
     public var staticMemories: [UUID]  // IDs of static memory nodes
@@ -76,7 +76,7 @@ public struct ProfileMetadata: Codable, Equatable {
 }
 
 /// Dynamic context item - tracks "currently working on" / "recent endeavors"
-/// Similar to Supermemory's dynamic profile concept
+/// Similar to dynamic profile concept for context-aware retrieval
 public struct DynamicContextItem: Codable, Equatable, Identifiable {
     public let id: UUID
     public var content: String
@@ -119,7 +119,7 @@ public enum DynamicContextCategory: String, Codable, CaseIterable {
 }
 
 /// Manages user profiles and memory classification
-/// Enhanced with RAM-like caching for instant access (Supermemory-style)
+/// Enhanced with RAM-like caching for instant access
 public actor UserProfileManager {
     
     // RAM-like cache - profiles stay in memory for instant access
@@ -285,7 +285,7 @@ public actor UserProfileManager {
         return memories
     }
     
-    // MARK: - Dynamic Context Management (Supermemory-style)
+    // MARK: - Dynamic Context Management
     
     /// Add or update dynamic context item (e.g., "currently working on X")
     public func updateDynamicContext(

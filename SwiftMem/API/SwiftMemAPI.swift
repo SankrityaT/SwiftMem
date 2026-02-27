@@ -188,7 +188,7 @@ public actor SwiftMemAPI {
         // Generate embedding
         let embedding = try await embedder.embed(content)
         
-        // Extract entities for better relationship detection (Supermemory approach)
+        // Extract entities for better relationship detection
         let entityExtractor = EntityExtractor()
         let extractedFacts = await entityExtractor.extractFacts(from: content)
         let entities = extractedFacts.map { "\($0.subject):\($0.value)" }
@@ -618,7 +618,7 @@ public actor SwiftMemAPI {
         }
     }
     
-    // MARK: - Dynamic Profile (Supermemory-style RAM Layer)
+    // MARK: - Dynamic Profile (RAM-like instant access layer)
     
     /// Get dynamic context string for AI prompts (RAM-like instant access)
     /// This is the "currently working on" / "recent endeavors" layer

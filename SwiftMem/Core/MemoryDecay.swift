@@ -35,12 +35,12 @@ public actor MemoryDecay {
         }
     }
     
-    /// Calculate decayed confidence for a memory (Supermemory-style temporal validity)
+    /// Calculate decayed confidence for a memory
     private func calculateDecayedConfidence(memory: MemoryNode) -> Float {
         let currentDate = Date()
         let daysSinceCreation = currentDate.timeIntervalSince(memory.timestamp) / 86400
         
-        // Different decay rates based on memory type (Supermemory approach)
+        // Different decay rates based on memory type
         let decayRate: Float
         if memory.isStatic {
             // Static memories (core facts) barely decay
@@ -61,7 +61,7 @@ public actor MemoryDecay {
         let ageFactor = exp(-decayRate * Float(daysSinceCreation))
         var decayedConfidence = memory.confidence * ageFactor + accessBoost + importanceBoost
         
-        // Temporal validity check (Supermemory concept)
+        // Temporal validity check for time-sensitive memories
         // If memory has temporal markers, check if it's still valid
         if let eventDate = memory.eventDate {
             let daysSinceEvent = currentDate.timeIntervalSince(eventDate) / 86400
@@ -78,7 +78,7 @@ public actor MemoryDecay {
     
     // MARK: - Forgetting
     
-    /// Remove low-confidence memories (automatic forgetting - Supermemory-style)
+    /// Remove low-confidence memories (automatic forgetting for memory management)
     public func pruneMemories(threshold: Float = 0.1) async throws -> Int {
         let allMemories = await memoryGraphStore.getAllMemories()
         var prunedCount = 0
