@@ -16,35 +16,19 @@ let package = Package(
         .library(
             name: "SwiftMem",
             targets: ["SwiftMem"]
-        ),
-        .executable(
-            name: "LongMemEval",
-            targets: ["LongMemEval"]
         )
     ],
-    dependencies: [
-        // OnDeviceCatalyst is optional - only needed if using BGE-Small embeddings
-        // SwiftMem uses NLEmbedding by default (no dependencies required)
-    ],
+    dependencies: [],
     targets: [
         .target(
             name: "SwiftMem",
-            dependencies: [
-                // No dependencies - uses Apple's built-in NLEmbedding
-            ],
+            dependencies: [],
             path: "SwiftMem",
             exclude: [
-                // Exclude the app entrypoint; the package is a pure library.
                 "SwiftMemApp.swift",
-                // Exclude test/demo views
                 "Views/",
                 "Extra Files/"
             ]
-        ),
-        .executableTarget(
-            name: "LongMemEval",
-            dependencies: ["SwiftMem"],
-            path: "Sources/LongMemEval"
         )
     ]
 )
