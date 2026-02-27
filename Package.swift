@@ -18,11 +18,15 @@ let package = Package(
             targets: ["SwiftMem"]
         )
     ],
-    dependencies: [],
+    dependencies: [
+        .package(url: "https://github.com/SankrityaT/OnDeviceCatalyst.git", branch: "main")
+    ],
     targets: [
         .target(
             name: "SwiftMem",
-            dependencies: [],
+            dependencies: [
+                .product(name: "OnDeviceCatalyst", package: "OnDeviceCatalyst")
+            ],
             path: "SwiftMem",
             exclude: [
                 "SwiftMemApp.swift",
