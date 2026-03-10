@@ -602,21 +602,31 @@ public actor SwiftMemAPI {
     }
     
     /// Add memories from a conversation (automatic extraction)
-    public func addConversation(conversation: String, userId: String) async throws -> Int {
+    public func addConversation(
+        conversation: String,
+        userId: String,
+        containerTags: [String] = []
+    ) async throws -> Int {
         guard let embedder = embedder, let extractor = memoryExtractor, let store = memoryGraphStore else {
             throw SwiftMemError.notInitialized
         }
-        
+
         // Extract memories
         let extracted = try await extractor.extractMemories(
             from: conversation,
             userId: userId,
             embedder: embedder
         )
-        
+
         // Store each memory with relationship detection
         for extractedMemory in extracted {
             var memoryNode = extractedMemory.toMemoryNode()
+
+            // Merge caller-supplied tags with the user tag added by toMemoryNode()
+            if !containerTags.isEmpty {
+                let merged = Array(Set(memoryNode.containerTags + containerTags))
+                memoryNode.containerTags = merged
+            }
 
             if let detector = relationshipDetector {
                 let existingMemories = await store.getAllMemories()
@@ -636,7 +646,7 @@ public actor SwiftMemAPI {
             try await store.addMemory(memoryNode)
             _ = await userProfileManager?.classifyMemory(memoryNode, userId: userId)
         }
-        
+
         return extracted.count
     }
     
