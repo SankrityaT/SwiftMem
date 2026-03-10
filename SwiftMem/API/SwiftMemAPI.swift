@@ -148,7 +148,7 @@ public actor SwiftMemAPI {
 
     /// Migrate all memory embeddings when the embedder dimensions change
     private func migrateEmbeddingsIfNeeded(store: MemoryGraphStore, embedder: Embedder) async throws {
-        let storedDimensions = store.getStoredEmbeddingDimensions()
+        let storedDimensions = await store.getStoredEmbeddingDimensions()
         let currentDimensions = embedder.dimensions
 
         if let stored = storedDimensions, stored == currentDimensions {
