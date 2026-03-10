@@ -32,17 +32,21 @@ public actor SwiftMemAPI {
     private var relationshipDetector: RelationshipDetector?
     private var embedder: Embedder?
     private var config: SwiftMemConfig
-    
+
     // Phase 7 & 8: Consolidation and Batch Operations
     private var memoryConsolidator: MemoryConsolidator?
     private var batchOperations: BatchOperations?
-    
+
     // Integration with existing components
     private var graphStore: GraphStore?
     private var vectorStore: VectorStore?
     private var embeddingEngine: EmbeddingEngine?
     private var retrievalEngine: RetrievalEngine?
-    
+
+    // LLM services (Phase 2-4)
+    private var llmService: LLMService?
+    private var llmReranker: LLMReranker?
+
     private var isInitialized = false
     
     private init() {
@@ -54,36 +58,73 @@ public actor SwiftMemAPI {
     /// Initialize SwiftMem (call once at app startup)
     public func initialize(config: SwiftMemConfig = .default, embedder: Embedder? = nil) async throws {
         guard !isInitialized else { return }
-        
-        // Use NLEmbedding by default
-        self.embedder = embedder ?? NLEmbedder()
-        
+
+        // Select best embedder: explicit > GGUF (via config) > NLEmbedder
+        if let explicitEmbedder = embedder {
+            self.embedder = explicitEmbedder
+        } else {
+            self.embedder = await EmbeddingEngine.createBestEmbedder(config: config)
+        }
+
         // Update config to match embedder dimensions
         var updatedConfig = config
         updatedConfig.embeddingDimensions = self.embedder!.dimensions
         self.config = updatedConfig
-        
+
         // Initialize GraphStore ONCE (shared by both old and new components)
         let sharedGraphStore = try await GraphStore.create(config: updatedConfig)
-        
+
         // Initialize existing components (for compatibility)
         self.graphStore = sharedGraphStore
         self.vectorStore = VectorStore(config: updatedConfig)
         self.embeddingEngine = EmbeddingEngine(embedder: self.embedder!, config: updatedConfig)
-        
+
         // Initialize new Memory Graph components - REUSE the same GraphStore
         self.memoryGraphStore = try await MemoryGraphStore.create(config: updatedConfig, graphStore: sharedGraphStore)
-        self.userProfileManager = UserProfileManager(memoryGraphStore: memoryGraphStore!)
+
+        // Phase 1.5: Embedding migration — check if stored dimensions differ from current embedder
+        try await migrateEmbeddingsIfNeeded(store: memoryGraphStore!, embedder: self.embedder!)
+
+        // Phase 2: Initialize LLMService
+        let llmSvc = LLMService(config: updatedConfig.llmConfig)
+        let llmAvailable = await llmSvc.initialize()
+        if llmAvailable {
+            self.llmService = llmSvc
+            print("✅ [SwiftMemAPI] LLMService available")
+        } else {
+            self.llmService = nil
+            print("ℹ️ [SwiftMemAPI] LLMService not available — heuristic fallbacks active")
+        }
+
+        // Phase 4: UserProfileManager with LLM classification
+        self.userProfileManager = UserProfileManager(
+            memoryGraphStore: memoryGraphStore!,
+            llmService: self.llmService,
+            llmConfig: updatedConfig.llmConfig
+        )
+
         self.relationshipDetector = RelationshipDetector(config: updatedConfig)
-        self.memoryExtractor = MemoryExtractor(config: updatedConfig, relationshipDetector: relationshipDetector!)
+
+        // Phase 2: MemoryExtractor with LLM extraction
+        self.memoryExtractor = MemoryExtractor(
+            config: updatedConfig,
+            relationshipDetector: relationshipDetector!,
+            llmService: self.llmService
+        )
+
         self.hybridSearch = HybridSearch(memoryGraphStore: memoryGraphStore!, config: updatedConfig)
         self.reranker = Reranker(config: updatedConfig)
         self.memoryDecay = MemoryDecay(memoryGraphStore: memoryGraphStore!, config: updatedConfig)
-        
+
+        // Phase 3: LLM Reranker
+        if let llm = self.llmService {
+            self.llmReranker = LLMReranker(config: updatedConfig, llmService: llm)
+        }
+
         // Phase 7 & 8: Initialize consolidator and batch operations
         self.memoryConsolidator = MemoryConsolidator()
         self.batchOperations = BatchOperations(embedder: self.embedder!, relationshipDetector: relationshipDetector!)
-        
+
         // Create integrated RetrievalEngine
         self.retrievalEngine = RetrievalEngine(
             graphStore: graphStore!,
@@ -91,22 +132,95 @@ public actor SwiftMemAPI {
             embeddingEngine: embeddingEngine!,
             config: updatedConfig
         )
-        
+
         // Start background decay process
         print("⏰ [SwiftMemAPI] Starting memory decay background process...")
         Task {
             await memoryDecay?.startScheduledDecay()
             print("✅ [SwiftMemAPI] Memory decay process started")
         }
-        
+
         isInitialized = true
-        print("✅ [SwiftMemAPI] Initialization complete - all components wired")
+        print("✅ [SwiftMemAPI] Initialization complete — all components wired")
+    }
+
+    // MARK: - Embedding Migration (Phase 1.5)
+
+    /// Migrate all memory embeddings when the embedder dimensions change
+    private func migrateEmbeddingsIfNeeded(store: MemoryGraphStore, embedder: Embedder) async throws {
+        let storedDimensions = store.getStoredEmbeddingDimensions()
+        let currentDimensions = embedder.dimensions
+
+        if let stored = storedDimensions, stored == currentDimensions {
+            // Dimensions match — no migration needed
+            return
+        }
+
+        let allMemories = await store.getAllMemories()
+        if allMemories.isEmpty {
+            // No memories to migrate — just record dimensions
+            try await store.setEmbeddingDimensions(currentDimensions, model: embedder.modelIdentifier)
+            return
+        }
+
+        if storedDimensions != nil {
+            print("🔄 [SwiftMemAPI] Embedding migration: \(storedDimensions!) dims → \(currentDimensions) dims (\(allMemories.count) memories)")
+        } else {
+            print("🔄 [SwiftMemAPI] First-time embedding metadata: recording \(currentDimensions) dims (\(allMemories.count) memories)")
+            // First time storing metadata — check if existing embeddings match
+            if let first = allMemories.first, first.embedding.count == currentDimensions {
+                try await store.setEmbeddingDimensions(currentDimensions, model: embedder.modelIdentifier)
+                return
+            } else if let first = allMemories.first, first.embedding.isEmpty {
+                try await store.setEmbeddingDimensions(currentDimensions, model: embedder.modelIdentifier)
+                return
+            }
+            print("🔄 [SwiftMemAPI] Existing embeddings have different dimensions — migrating")
+        }
+
+        // Batch re-embed all memories (batches of 10)
+        let batchSize = 10
+        var migratedCount = 0
+
+        for batchStart in stride(from: 0, to: allMemories.count, by: batchSize) {
+            let batchEnd = min(batchStart + batchSize, allMemories.count)
+            let batch = Array(allMemories[batchStart..<batchEnd])
+
+            let texts = batch.map { $0.content }
+            let newEmbeddings = try await embedder.embedBatch(texts)
+
+            for (i, memory) in batch.enumerated() {
+                // MemoryNode.embedding is `let` — must construct a new node with same id
+                let migratedNode = MemoryNode(
+                    id: memory.id,
+                    content: memory.content,
+                    embedding: newEmbeddings[i],
+                    timestamp: memory.timestamp,
+                    confidence: memory.confidence,
+                    relationships: memory.relationships,
+                    metadata: memory.metadata,
+                    isLatest: memory.isLatest,
+                    isStatic: memory.isStatic,
+                    containerTags: memory.containerTags,
+                    eventDate: memory.eventDate
+                )
+                try await store.updateMemory(migratedNode)
+                migratedCount += 1
+            }
+        }
+
+        // Update metadata
+        try await store.setEmbeddingDimensions(currentDimensions, model: embedder.modelIdentifier)
+        print("✅ [SwiftMemAPI] Migrated \(migratedCount) memory embeddings to \(currentDimensions) dims")
     }
     
     /// Reset all components and close database connections (for repair/cleanup)
     public func reset() async {
         print("🔄 [SwiftMemAPI] Resetting all components...")
         
+        // Release LLM model if loaded
+        await llmService?.release()
+
         // Clear all components (this will trigger their deinit and close DB connections)
         memoryGraphStore = nil
         userProfileManager = nil
@@ -122,6 +236,8 @@ public actor SwiftMemAPI {
         embeddingEngine = nil
         retrievalEngine = nil
         embedder = nil
+        llmService = nil
+        llmReranker = nil
         
         isInitialized = false
         
@@ -369,16 +485,32 @@ public actor SwiftMemAPI {
             }
         }
         
-        // Re-sort with expanded results and take top K
-        let finalResults = expandedResults
+        // Re-sort with expanded results
+        let sortedExpanded = expandedResults
             .sorted { $0.1 > $1.1 }
-            .prefix(limit)
-        
-        print("✅ [SwiftMemAPI] Final results after graph expansion: \(finalResults.count)")
+
+        // Convert to ScoredMemory for reranking pipeline
+        var pipelineResults = sortedExpanded.map { ScoredMemory(memory: $0.0, score: $0.1) }
+
+        // Phase 3: LLM Reranking (if available)
+        if let llmReranker = llmReranker {
+            pipelineResults = await llmReranker.rerank(
+                query: query,
+                memories: pipelineResults,
+                topK: limit * 2
+            )
+        }
+
+        // Phase 3: MMR Diversification
+        pipelineResults = mmrDiversify(memories: pipelineResults, topK: limit)
+
+        let finalResults = pipelineResults.prefix(limit)
+
+        print("✅ [SwiftMemAPI] Final results after pipeline: \(finalResults.count)")
         
         // Convert to public result type
-        return finalResults.map { (memory, score) in
-            MemoryResult(memory: memory, score: score)
+        return finalResults.map { sm in
+            MemoryResult(memory: sm.memory, score: sm.score)
         }
     }
     
@@ -677,6 +809,65 @@ public actor SwiftMemAPI {
         await profileManager.clearCache()
     }
     
+    // MARK: - Phase 5: Document Ingestion
+
+    /// Ingest a document by chunking, embedding, and storing as searchable memory nodes
+    /// - Parameters:
+    ///   - content: Full document text
+    ///   - title: Document title (used for tagging)
+    ///   - userId: User identifier
+    ///   - containerTags: Additional tags for filtering
+    ///   - chunkSize: Target chunk size in characters (default 512)
+    ///   - overlap: Overlap between chunks (default 128)
+    /// - Returns: Number of chunks created
+    public func addDocument(
+        content: String,
+        title: String,
+        userId: String,
+        containerTags: [String] = [],
+        chunkSize: Int = 512,
+        overlap: Int = 128
+    ) async throws -> Int {
+        guard let embedder = embedder, let store = memoryGraphStore else {
+            throw SwiftMemError.notInitialized
+        }
+
+        // Chunk the document
+        let chunks = DocumentChunker.chunk(text: content, chunkSize: chunkSize, overlap: overlap)
+        guard !chunks.isEmpty else { return 0 }
+
+        print("📄 [SwiftMemAPI] Chunking document '\(title)': \(chunks.count) chunks")
+
+        // Build tags
+        var allTags = containerTags
+        allTags.append("doc:\(title)")
+        if !allTags.contains("user:\(userId)") {
+            allTags.append("user:\(userId)")
+        }
+
+        // Batch embed all chunks
+        let texts = chunks.map { $0.content }
+        let embeddings = try await embedder.embedBatch(texts)
+
+        // Store each chunk as a MemoryNode
+        for (i, chunk) in chunks.enumerated() {
+            let memory = MemoryNode(
+                content: chunk.content,
+                embedding: embeddings[i],
+                metadata: MemoryMetadata(
+                    source: .document,
+                    topics: extractTopics(from: chunk.content),
+                    importance: 0.5
+                ),
+                containerTags: allTags
+            )
+            try await store.addMemory(memory)
+        }
+
+        print("✅ [SwiftMemAPI] Stored \(chunks.count) document chunks for '\(title)'")
+        return chunks.count
+    }
+
     // MARK: - Clear All Memories
     
     /// Clear all memories and relationships (for benchmarks/testing)

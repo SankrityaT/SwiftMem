@@ -6,6 +6,69 @@
 //
 
 import Foundation
+import OnDeviceCatalyst
+
+// MARK: - LLM Configuration
+
+/// Configuration for on-device LLM features (extraction, reranking, classification)
+public struct LLMConfig {
+    /// Path to GGUF embedding model file (nil = use NLEmbedder fallback)
+    public var embeddingModelPath: String?
+
+    /// Path to GGUF completion/LLM model file (nil = disable LLM features)
+    public var completionModelPath: String?
+
+    /// Architecture for the embedding model (auto-detected from filename if nil)
+    public var embeddingArchitecture: ModelArchitecture?
+
+    /// Architecture for the completion model (auto-detected from filename if nil)
+    public var completionArchitecture: ModelArchitecture?
+
+    /// Enable LLM-powered fact extraction from conversations
+    public var enableLLMExtraction: Bool
+
+    /// Enable LLM-powered search result reranking
+    public var enableLLMReranking: Bool
+
+    /// Enable LLM-powered memory classification (static vs dynamic)
+    public var enableLLMClassification: Bool
+
+    /// Max tokens for extraction responses
+    public var extractionMaxTokens: Int
+
+    /// Max tokens for reranking responses
+    public var rerankingMaxTokens: Int
+
+    /// Timeout for LLM calls (seconds)
+    public var llmTimeout: TimeInterval
+
+    public init(
+        embeddingModelPath: String? = nil,
+        completionModelPath: String? = nil,
+        embeddingArchitecture: ModelArchitecture? = nil,
+        completionArchitecture: ModelArchitecture? = nil,
+        enableLLMExtraction: Bool = true,
+        enableLLMReranking: Bool = true,
+        enableLLMClassification: Bool = false,
+        extractionMaxTokens: Int = 512,
+        rerankingMaxTokens: Int = 256,
+        llmTimeout: TimeInterval = 30.0
+    ) {
+        self.embeddingModelPath = embeddingModelPath
+        self.completionModelPath = completionModelPath
+        self.embeddingArchitecture = embeddingArchitecture
+        self.completionArchitecture = completionArchitecture
+        self.enableLLMExtraction = enableLLMExtraction
+        self.enableLLMReranking = enableLLMReranking
+        self.enableLLMClassification = enableLLMClassification
+        self.extractionMaxTokens = extractionMaxTokens
+        self.rerankingMaxTokens = rerankingMaxTokens
+        self.llmTimeout = llmTimeout
+    }
+
+    /// Default config with no models (all LLM features disabled)
+    public static let `default` = LLMConfig()
+}
 
 // MARK: - Main Configuration
 
@@ -108,9 +171,14 @@ public struct SwiftMemConfig {
     
     /// Entity types to extract
     public var entityTypesToExtract: Set<EntityType>
-    
+
+    // MARK: - LLM Settings
+
+    /// Configuration for on-device LLM features
+    public var llmConfig: LLMConfig
+
     // MARK: - Initialization
-    
+
     public init(
         embeddingModel: EmbeddingModelType = .miniLM,
         embeddingDimensions: Int = 384,
@@ -138,7 +206,8 @@ public struct SwiftMemConfig {
         autoDeleteAfter: TimeInterval? = nil,
         enableEntityExtraction: Bool = true,
         entityExtractionConfidence: Double = 0.6,
-        entityTypesToExtract: Set<EntityType> = Set(EntityType.allCases)
+        entityTypesToExtract: Set<EntityType> = Set(EntityType.allCases),
+        llmConfig: LLMConfig = .default
     ) {
         self.embeddingModel = embeddingModel
         self.embeddingDimensions = embeddingDimensions
@@ -167,6 +236,7 @@ public struct SwiftMemConfig {
         self.enableEntityExtraction = enableEntityExtraction
         self.entityExtractionConfidence = entityExtractionConfidence
         self.entityTypesToExtract = entityTypesToExtract
+        self.llmConfig = llmConfig
     }
     
     // MARK: - Validation

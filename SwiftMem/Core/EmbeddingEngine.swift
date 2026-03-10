@@ -7,6 +7,7 @@
 //
 
 import Foundation
+import OnDeviceCatalyst
 
 // MARK: - Embedder Protocol
 
@@ -23,6 +24,46 @@ public protocol Embedder: Sendable {
     
     /// Model identifier
     var modelIdentifier: String { get }
+}
+
+// MARK: - Embedder Factory
+
+extension EmbeddingEngine {
+
+    /// Create the best available embedder based on config
+    /// Tries GGUFEmbedder first (if model path provided), validates with test embedding,
+    /// then falls back to NLEmbedder on any failure
+    public static func createBestEmbedder(config: SwiftMemConfig) async -> Embedder {
+        // Try GGUF embedder if model path is configured
+        if let modelPath = config.llmConfig.embeddingModelPath {
+            do {
+                let architecture = config.llmConfig.embeddingArchitecture
+                    ?? ModelArchitecture.detectFromPath(modelPath)
+
+                let ggufEmbedder = try GGUFEmbedder(
+                    modelPath: modelPath,
+                    dimensions: config.embeddingDimensions,
+                    architecture: architecture,
+                    modelIdentifier: URL(fileURLWithPath: modelPath).deletingPathExtension().lastPathComponent
+                )
+
+                // Validate with a test embedding
+                let testEmbedding = try await ggufEmbedder.embed("test")
+                guard testEmbedding.count == ggufEmbedder.dimensions else {
+                    print("⚠️ [EmbeddingEngine] GGUFEmbedder dimension mismatch, falling back to NLEmbedder")
+                    return NLEmbedder()
+                }
+
+                print("✅ [EmbeddingEngine] Using GGUFEmbedder (\(ggufEmbedder.modelIdentifier), \(ggufEmbedder.dimensions)d)")
+                return ggufEmbedder
+            } catch {
+                print("⚠️ [EmbeddingEngine] GGUFEmbedder failed: \(error.localizedDescription), falling back to NLEmbedder")
+            }
+        }
+
+        print("ℹ️ [EmbeddingEngine] Using NLEmbedder (no GGUF model configured)")
+        return NLEmbedder()
+    }
 }
 
 // MARK: - Embedding Engine

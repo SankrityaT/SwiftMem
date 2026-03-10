@@ -1,0 +1,144 @@
+//
+//  LLMService.swift
+//  SwiftMem
+//
+//  Shared LLM service actor wrapping OnDeviceCatalyst for completion tasks
+//
+
+import Foundation
+import OnDeviceCatalyst
+
+/// Shared actor providing on-device LLM completion capabilities
+/// Used for fact extraction, reranking, and classification
+public actor LLMService {
+
+    private var modelProfile: ModelProfile?
+    private let config: LLMConfig
+    private var isReady = false
+
+    public init(config: LLMConfig) {
+        self.config = config
+    }
+
+    // MARK: - Initialization
+
+    /// Load the completion model. Returns true if LLM is available.
+    public func initialize() async -> Bool {
+        guard let modelPath = config.completionModelPath else {
+            print("ℹ️ [LLMService] No completion model path configured")
+            return false
+        }
+
+        guard FileManager.default.fileExists(atPath: modelPath) else {
+            print("⚠️ [LLMService] Completion model not found at: \(modelPath)")
+            return false
+        }
+
+        do {
+            let architecture = config.completionArchitecture
+                ?? ModelArchitecture.detectFromPath(modelPath)
+
+            let profile = try ModelProfile(
+                filePath: modelPath,
+                name: URL(fileURLWithPath: modelPath).deletingPathExtension().lastPathComponent,
+                architecture: architecture
+            )
+
+            // Validate model loads successfully
+            let result = await Catalyst.loadModelSafely(
+                profile: profile,
+                settings: .balanced,
+                predictionConfig: .balanced
+            )
+
+            switch result {
+            case .success:
+                self.modelProfile = profile
+                self.isReady = true
+                print("✅ [LLMService] Completion model loaded: \(profile.name)")
+                return true
+            case .failure(let error):
+                print("⚠️ [LLMService] Failed to load completion model: \(error.localizedDescription)")
+                return false
+            }
+        } catch {
+            print("⚠️ [LLMService] Failed to create model profile: \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    /// Whether the LLM service is available for use
+    public var isAvailable: Bool { isReady }
+
+    // MARK: - Completion
+
+    /// Run a completion with timeout. Returns nil on any failure (graceful degradation).
+    public func complete(
+        prompt: String,
+        systemPrompt: String = "You are a helpful AI assistant.",
+        maxTokens: Int = 512
+    ) async -> String? {
+        guard let profile = modelProfile, isReady else { return nil }
+
+        do {
+            let predictionConfig = PredictionConfig(
+                temperature: 0.1,
+                topK: 40,
+                topP: 0.9,
+                minP: 0.0,
+                typicalP: 1.0,
+                repetitionPenalty: 1.1,
+                repetitionPenaltyRange: 64,
+                frequencyPenalty: 0.0,
+                presencePenalty: 0.0,
+                mirostatMode: 0,
+                mirostatTau: 5.0,
+                mirostatEta: 0.1,
+                maxTokens: maxTokens,
+                stopSequences: []
+            )
+
+            let result: String? = try await withThrowingTaskGroup(of: String?.self) { group in
+                group.addTask {
+                    let response = try await Catalyst.shared.complete(
+                        prompt: prompt,
+                        systemPrompt: systemPrompt,
+                        using: profile,
+                        settings: .balanced,
+                        predictionConfig: predictionConfig
+                    )
+                    return response
+                }
+
+                group.addTask {
+                    try await Task.sleep(nanoseconds: UInt64(self.config.llmTimeout * 1_000_000_000))
+                    return nil // Timeout sentinel
+                }
+
+                // Take whichever finishes first
+                if let first = try await group.next() {
+                    group.cancelAll()
+                    return first
+                }
+                return nil
+            }
+
+            return result
+        } catch {
+            print("⚠️ [LLMService] Completion failed: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    // MARK: - Cleanup
+
+    /// Release the loaded model to free memory
+    public func release() async {
+        if let profile = modelProfile {
+            await Catalyst.shared.releaseInstance(for: profile.id)
+            self.modelProfile = nil
+            self.isReady = false
+            print("🗑️ [LLMService] Released completion model")
+        }
+    }
+}

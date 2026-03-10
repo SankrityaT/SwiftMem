@@ -197,6 +197,149 @@ public actor Reranker {
     }
 }
 
+// MARK: - LLM Reranker
+
+/// Re-ranks search results using on-device LLM scoring
+public actor LLMReranker {
+
+    private let config: SwiftMemConfig
+    private let llmService: LLMService
+
+    public init(config: SwiftMemConfig, llmService: LLMService) {
+        self.config = config
+        self.llmService = llmService
+    }
+
+    /// Rerank memories by asking LLM to score query-memory relevance
+    /// Falls back to original order on any failure
+    public func rerank(
+        query: String,
+        memories: [ScoredMemory],
+        topK: Int = 10
+    ) async -> [ScoredMemory] {
+        guard config.llmConfig.enableLLMReranking,
+              await llmService.isAvailable,
+              !memories.isEmpty else {
+            return Array(memories.prefix(topK))
+        }
+
+        // Only rerank top-20 candidates for efficiency
+        let candidates = Array(memories.prefix(20))
+
+        // Build prompt listing candidates
+        var memoryList = ""
+        for (i, sm) in candidates.enumerated() {
+            let preview = String(sm.memory.content.prefix(150))
+            memoryList += "\(i): \(preview)\n"
+        }
+
+        let prompt = """
+        Score each memory's relevance to the query on a 0.0-1.0 scale.
+
+        Query: \(query)
+
+        Memories:
+        \(memoryList)
+
+        Return ONLY a JSON object: {"scores": [0.8, 0.2, ...]}
+        One score per memory in the same order. Higher = more relevant.
+        """
+
+        let systemPrompt = "You are a relevance scoring system. Return ONLY valid JSON. No explanations."
+
+        guard let response = await llmService.complete(
+            prompt: prompt,
+            systemPrompt: systemPrompt,
+            maxTokens: config.llmConfig.rerankingMaxTokens
+        ) else {
+            return Array(memories.prefix(topK))
+        }
+
+        // Parse scores
+        guard let scores = parseLLMScores(response, expectedCount: candidates.count) else {
+            return Array(memories.prefix(topK))
+        }
+
+        // Blend LLM score (60%) with original score (40%)
+        var reranked: [ScoredMemory] = []
+        for (i, sm) in candidates.enumerated() {
+            let blendedScore = scores[i] * 0.6 + sm.score * 0.4
+            reranked.append(ScoredMemory(memory: sm.memory, score: blendedScore))
+        }
+
+        reranked.sort { $0.score > $1.score }
+        print("✅ [LLMReranker] Reranked \(candidates.count) candidates")
+        return Array(reranked.prefix(topK))
+    }
+
+    private func parseLLMScores(_ response: String, expectedCount: Int) -> [Float]? {
+        var cleaned = response.trimmingCharacters(in: .whitespacesAndNewlines)
+        if cleaned.hasPrefix("```json") { cleaned = String(cleaned.dropFirst(7)) }
+        else if cleaned.hasPrefix("```") { cleaned = String(cleaned.dropFirst(3)) }
+        if cleaned.hasSuffix("```") { cleaned = String(cleaned.dropLast(3)) }
+        cleaned = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard let data = cleaned.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let scores = json["scores"] as? [Any] else {
+            return nil
+        }
+
+        let floatScores = scores.compactMap { element -> Float? in
+            if let d = element as? Double { return Float(d) }
+            if let i = element as? Int { return Float(i) }
+            return nil
+        }
+
+        guard floatScores.count == expectedCount else { return nil }
+        return floatScores.map { min(max($0, 0.0), 1.0) }
+    }
+}
+
+// MARK: - MMR Diversification
+
+/// Maximal Marginal Relevance diversification to reduce redundancy in results
+public func mmrDiversify(
+    memories: [ScoredMemory],
+    topK: Int,
+    lambda: Float = 0.7
+) -> [ScoredMemory] {
+    guard !memories.isEmpty else { return [] }
+    guard memories.count > topK else { return memories }
+
+    var selected: [ScoredMemory] = []
+    var remaining = memories
+
+    // Always select the highest-scored memory first
+    selected.append(remaining.removeFirst())
+
+    while selected.count < topK && !remaining.isEmpty {
+        var bestIdx = 0
+        var bestMMR: Float = -Float.infinity
+
+        for (i, candidate) in remaining.enumerated() {
+            let relevance = candidate.score
+
+            // Max similarity to any already-selected memory
+            var maxSim: Float = 0
+            for sel in selected {
+                let sim = embeddingCosineSimilarity(candidate.memory.embedding, sel.memory.embedding)
+                maxSim = max(maxSim, sim)
+            }
+
+            let mmrScore = lambda * relevance - (1.0 - lambda) * maxSim
+            if mmrScore > bestMMR {
+                bestMMR = mmrScore
+                bestIdx = i
+            }
+        }
+
+        selected.append(remaining.remove(at: bestIdx))
+    }
+
+    return selected
+}
+
 // MARK: - Supporting Types
 
 public struct ScoredMemory {
@@ -208,17 +351,22 @@ public struct ScoredMemory {
 
 private func cosineSimilarity(_ a: [Float], _ b: [Float]) -> Float {
     guard a.count == b.count else { return 0 }
-    
+
     var dotProduct: Float = 0
     var normA: Float = 0
     var normB: Float = 0
-    
+
     for i in 0..<a.count {
         dotProduct += a[i] * b[i]
         normA += a[i] * a[i]
         normB += b[i] * b[i]
     }
-    
+
     let denominator = sqrt(normA) * sqrt(normB)
     return denominator > 0 ? dotProduct / denominator : 0
+}
+
+/// Package-internal cosine similarity for embeddings (used by MMR)
+func embeddingCosineSimilarity(_ a: [Float], _ b: [Float]) -> Float {
+    return cosineSimilarity(a, b)
 }

@@ -126,13 +126,19 @@ public actor UserProfileManager {
     private var profiles: [String: UserProfile] = [:]
     private var profileCache: [String: (profile: UserProfile, lastAccessed: Date)] = [:]
     private let memoryGraphStore: MemoryGraphStore
-    
+    private var llmService: LLMService?
+
     // Cache settings
     private let maxCacheSize = 10
     private let cacheExpirySeconds: TimeInterval = 3600 // 1 hour
-    
-    public init(memoryGraphStore: MemoryGraphStore) {
+
+    /// LLM config for classification feature flag
+    private var llmConfig: LLMConfig?
+
+    public init(memoryGraphStore: MemoryGraphStore, llmService: LLMService? = nil, llmConfig: LLMConfig? = nil) {
         self.memoryGraphStore = memoryGraphStore
+        self.llmService = llmService
+        self.llmConfig = llmConfig
     }
     
     // MARK: - Profile Management (RAM-like)
@@ -189,13 +195,33 @@ public actor UserProfileManager {
     
     /// Classify memory as static or dynamic
     public func classifyMemory(_ memory: MemoryNode, userId: String) async -> Bool {
-        // Static if:
-        // 1. High importance (> 0.7)
-        // 2. User confirmed
-        // 3. Contains core facts (name, preferences, key info)
-        
-        let isStatic = memory.isStatic || containsCoreFactKeywords(memory.content)
-        
+        // Fast path: keyword check first
+        var isStatic = memory.isStatic || containsCoreFactKeywords(memory.content)
+
+        // If keyword check says dynamic but LLM is available, ask LLM
+        if !isStatic,
+           let llmConfig = llmConfig,
+           llmConfig.enableLLMClassification,
+           let llm = llmService,
+           await llm.isAvailable {
+            let prompt = """
+            Is this a permanent fact about the user or a temporary/episodic memory?
+            Memory: "\(memory.content)"
+            Reply with exactly one word: "static" or "dynamic"
+            """
+            if let response = await llm.complete(
+                prompt: prompt,
+                systemPrompt: "You classify memories. Reply with exactly one word.",
+                maxTokens: 10
+            ) {
+                let cleaned = response.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                if cleaned.contains("static") {
+                    isStatic = true
+                    print("🧠 [UserProfile] LLM classified as static: \(String(memory.content.prefix(50)))")
+                }
+            }
+        }
+
         var profile = await getProfile(userId: userId)
         
         if isStatic {

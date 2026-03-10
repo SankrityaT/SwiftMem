@@ -115,6 +115,14 @@ public actor MemoryGraphStore {
             """,
             """
             CREATE INDEX IF NOT EXISTS idx_memory_relationships_type ON memory_relationships(type);
+            """,
+
+            // Metadata table for tracking embedding dimensions, model info, etc.
+            """
+            CREATE TABLE IF NOT EXISTS swiftmem_metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
             """
         ]
         
@@ -137,6 +145,69 @@ public actor MemoryGraphStore {
         print("✅ [MemoryGraphStore] Schema initialized successfully")
     }
     
+    // MARK: - Metadata Operations
+
+    /// Get stored embedding dimensions from metadata table
+    public func getStoredEmbeddingDimensions() -> Int? {
+        guard let db = db else { return nil }
+        let sql = "SELECT value FROM swiftmem_metadata WHERE key = 'embedding_dimensions';"
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK,
+              sqlite3_step(statement) == SQLITE_ROW,
+              let valueCString = sqlite3_column_text(statement, 0) else {
+            return nil
+        }
+        return Int(String(cString: valueCString))
+    }
+
+    /// Get stored embedder model name from metadata table
+    public func getStoredEmbedderModel() -> String? {
+        guard let db = db else { return nil }
+        let sql = "SELECT value FROM swiftmem_metadata WHERE key = 'embedder_model';"
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK,
+              sqlite3_step(statement) == SQLITE_ROW,
+              let valueCString = sqlite3_column_text(statement, 0) else {
+            return nil
+        }
+        return String(cString: valueCString)
+    }
+
+    /// Store embedding dimensions and model name in metadata table
+    public func setEmbeddingDimensions(_ dimensions: Int, model: String) throws {
+        guard let db = db else {
+            throw SwiftMemError.storageError("Database not initialized")
+        }
+        let sql = "INSERT OR REPLACE INTO swiftmem_metadata (key, value) VALUES (?, ?);"
+        // Set dimensions
+        var stmt: OpaquePointer?
+        defer { sqlite3_finalize(stmt) }
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw SwiftMemError.storageError("Failed to prepare metadata insert")
+        }
+        "embedding_dimensions".withCString { sqlite3_bind_text(stmt, 1, $0, -1, SQLITE_TRANSIENT) }
+        String(dimensions).withCString { sqlite3_bind_text(stmt, 2, $0, -1, SQLITE_TRANSIENT) }
+        guard sqlite3_step(stmt) == SQLITE_DONE else {
+            throw SwiftMemError.storageError("Failed to set embedding_dimensions")
+        }
+
+        // Set model name in separate statement
+        var stmt2: OpaquePointer?
+        defer { sqlite3_finalize(stmt2) }
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt2, nil) == SQLITE_OK else {
+            throw SwiftMemError.storageError("Failed to prepare metadata insert")
+        }
+        "embedder_model".withCString { sqlite3_bind_text(stmt2, 1, $0, -1, SQLITE_TRANSIENT) }
+        model.withCString { sqlite3_bind_text(stmt2, 2, $0, -1, SQLITE_TRANSIENT) }
+        guard sqlite3_step(stmt2) == SQLITE_DONE else {
+            throw SwiftMemError.storageError("Failed to set embedder_model")
+        }
+
+        print("💾 [MemoryGraphStore] Stored metadata: dimensions=\(dimensions), model=\(model)")
+    }
+
     // MARK: - Memory Operations
 
     /// Execute raw SQL (for transactions)

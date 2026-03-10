@@ -9,13 +9,15 @@ import Foundation
 
 /// Automatically extracts structured memories from conversations
 public actor MemoryExtractor {
-    
+
     private let config: SwiftMemConfig
     private let relationshipDetector: RelationshipDetector
-    
-    public init(config: SwiftMemConfig, relationshipDetector: RelationshipDetector) {
+    private var llmService: LLMService?
+
+    public init(config: SwiftMemConfig, relationshipDetector: RelationshipDetector, llmService: LLMService? = nil) {
         self.config = config
         self.relationshipDetector = relationshipDetector
+        self.llmService = llmService
     }
     
     // MARK: - Memory Extraction
@@ -53,18 +55,25 @@ public actor MemoryExtractor {
         return memories
     }
     
-    /// Extract facts using LLM
+    /// Extract facts using LLM with fallback to heuristic
     private func extractFactsWithLLM(conversation: String) async throws -> [ConversationFact] {
+        // Guard: LLM extraction must be enabled and available
+        guard config.llmConfig.enableLLMExtraction,
+              let llm = llmService,
+              await llm.isAvailable else {
+            return extractFactsHeuristic(from: conversation)
+        }
+
         let prompt = """
         Extract structured memories from this conversation. Focus on:
         1. Facts about the user (preferences, work, life)
         2. Events and experiences
         3. Relationships and people
         4. Goals and plans
-        
+
         Conversation:
         \(conversation)
-        
+
         Return JSON array:
         [
           {
@@ -76,13 +85,70 @@ public actor MemoryExtractor {
             "confidence": 0.0-1.0
           }
         ]
-        
+
         Only extract meaningful, specific information. Avoid generic statements.
         """
-        
-        // Call LLM (placeholder - will integrate with Qwen)
-        // For now, use heuristic extraction
+
+        let systemPrompt = "You are a memory extraction system. Return ONLY valid JSON arrays. No explanations."
+
+        guard let response = await llm.complete(
+            prompt: prompt,
+            systemPrompt: systemPrompt,
+            maxTokens: config.llmConfig.extractionMaxTokens
+        ) else {
+            print("⚠️ [MemoryExtractor] LLM extraction returned nil, falling back to heuristic")
+            return extractFactsHeuristic(from: conversation)
+        }
+
+        // Parse JSON response defensively
+        if let facts = parseLLMExtractionResponse(response) {
+            print("✅ [MemoryExtractor] LLM extracted \(facts.count) facts")
+            return facts
+        }
+
+        print("⚠️ [MemoryExtractor] Failed to parse LLM response, falling back to heuristic")
         return extractFactsHeuristic(from: conversation)
+    }
+
+    /// Defensively parse LLM extraction JSON response
+    private func parseLLMExtractionResponse(_ response: String) -> [ConversationFact]? {
+        // Strip markdown code fences if present
+        var cleaned = response.trimmingCharacters(in: .whitespacesAndNewlines)
+        if cleaned.hasPrefix("```json") {
+            cleaned = String(cleaned.dropFirst(7))
+        } else if cleaned.hasPrefix("```") {
+            cleaned = String(cleaned.dropFirst(3))
+        }
+        if cleaned.hasSuffix("```") {
+            cleaned = String(cleaned.dropLast(3))
+        }
+        cleaned = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Try to find JSON array boundaries
+        guard let startIdx = cleaned.firstIndex(of: "["),
+              let endIdx = cleaned.lastIndex(of: "]") else {
+            return nil
+        }
+        let jsonString = String(cleaned[startIdx...endIdx])
+
+        guard let data = jsonString.data(using: .utf8) else { return nil }
+
+        do {
+            let rawFacts = try JSONDecoder().decode([LLMExtractedFact].self, from: data)
+            return rawFacts.map { raw in
+                ConversationFact(
+                    content: raw.content,
+                    type: ExtractedMemoryType(rawValue: raw.type) ?? .fact,
+                    entities: raw.entities ?? [],
+                    topics: raw.topics ?? [],
+                    importance: raw.importance ?? 0.5,
+                    confidence: raw.confidence ?? 0.7
+                )
+            }
+        } catch {
+            print("⚠️ [MemoryExtractor] JSON parse error: \(error.localizedDescription)")
+            return nil
+        }
     }
     
     /// Heuristic-based fact extraction (fallback)
@@ -244,6 +310,16 @@ public struct ConversationFact {
     let topics: [String]
     let importance: Float
     let confidence: Float
+}
+
+/// JSON-decodable fact from LLM response
+private struct LLMExtractedFact: Codable {
+    let content: String
+    let type: String
+    let entities: [String]?
+    let topics: [String]?
+    let importance: Float?
+    let confidence: Float?
 }
 
 /// Extracted memory ready to be stored
