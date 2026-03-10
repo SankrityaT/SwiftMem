@@ -30,9 +30,10 @@ public protocol Embedder: Sendable {
 
 extension EmbeddingEngine {
 
-    /// Create the best available embedder based on config
+    /// Create the best available embedder based on config.
     /// Resolves preset models (auto-downloads from HuggingFace), tries explicit path,
-    /// validates with test embedding, then falls back to NLEmbedder on any failure
+    /// validates with test embedding, then falls back to NLEmbedder on any failure.
+    /// Download progress is published to `SwiftMemDownloadState.shared` for SwiftUI observation.
     public static func createBestEmbedder(config: SwiftMemConfig) async -> Embedder {
         // Resolve model path: preset model > explicit path
         var modelPath = config.llmConfig.embeddingModelPath
@@ -40,18 +41,42 @@ extension EmbeddingEngine {
         var dimensions = config.embeddingDimensions
         var modelId = "gguf-embedder"
 
-        // Try preset model (auto-download)
+        // Try preset model (auto-download with progress reporting)
         if modelPath == nil, let preset = config.llmConfig.embeddingModel {
-            do {
-                modelPath = try await ModelDownloader.shared.resolve(preset)
-                architecture = preset.architecture
-                if let dims = preset.embeddingDimensions {
-                    dimensions = dims
+            var lastLoggedPct = -5  // print every 5%
+
+            let stream = await ModelDownloader.shared.ensure(preset)
+            for await event in stream {
+                // Update SwiftUI observable state on main actor
+                let capturedEvent = event
+                Task { @MainActor in SwiftMemDownloadState.shared.update(capturedEvent) }
+
+                switch event {
+                case .starting(let name):
+                    print("⬇️ [EmbeddingEngine] Starting download: \(name)")
+                case .downloading(let name, let progress, let dl, let total):
+                    let pct = Int(progress * 100)
+                    if pct >= lastLoggedPct + 5 {
+                        lastLoggedPct = pct
+                        print("⬇️ [EmbeddingEngine] \(name): \(pct)% (\(dl)/\(total) MB)")
+                    }
+                case .verifying(let name):
+                    print("🔍 [EmbeddingEngine] Verifying \(name)...")
+                case .completed(let name, let path):
+                    print("✅ [EmbeddingEngine] Downloaded: \(name)")
+                    modelPath = path
+                    architecture = preset.architecture
+                    if let dims = preset.embeddingDimensions { dimensions = dims }
+                    modelId = preset.rawValue
+                case .alreadyCached(let name, let path):
+                    print("✅ [EmbeddingEngine] Cached: \(name)")
+                    modelPath = path
+                    architecture = preset.architecture
+                    if let dims = preset.embeddingDimensions { dimensions = dims }
+                    modelId = preset.rawValue
+                case .failed(let name, let err):
+                    print("⚠️ [EmbeddingEngine] Failed to download \(name): \(err)")
                 }
-                modelId = preset.rawValue
-                print("✅ [EmbeddingEngine] Resolved preset: \(preset.displayName)")
-            } catch {
-                print("⚠️ [EmbeddingEngine] Failed to resolve preset \(preset.rawValue): \(error.localizedDescription)")
             }
         }
 

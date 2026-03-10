@@ -22,21 +22,32 @@ public actor HybridSearch {
     // MARK: - Hybrid Search (v3: Reciprocal Rank Fusion)
 
     /// Search memories using RRF over three ranked lists: vector, BM25, graph-neighbors.
-    /// vectorWeight and keywordWeight are preserved for API compatibility but unused — RRF handles fusion.
+    /// - Parameter candidateMemories: Pre-filtered memory set (e.g. by container tag). nil = search all.
+    /// - Note: vectorWeight/keywordWeight preserved for API compatibility but unused — RRF handles fusion.
     public func search(
         query: String,
         queryEmbedding: [Float],
         topK: Int = 10,
         vectorWeight: Float = 0.7,
-        keywordWeight: Float = 0.3
+        keywordWeight: Float = 0.3,
+        candidateMemories: [MemoryNode]? = nil
     ) async throws -> [ScoredMemory] {
         let k = Float(config.rrfK)  // default 60
         let candidateK = topK * 3
 
-        // 1. Three ranked lists
-        let vectorResults  = try await vectorSearch(embedding: queryEmbedding, topK: candidateK)
-        let keywordResults = await keywordSearch(query: query, topK: candidateK)
-        let graphResults   = await graphNeighborSearch(seedMemories: vectorResults, topK: candidateK)
+        // Load memories once — use pre-filtered set if provided (tag/user filtering)
+        let allMemories: [MemoryNode]
+        if let candidates = candidateMemories {
+            allMemories = candidates
+        } else {
+            allMemories = await memoryGraphStore.getAllMemories()
+        }
+        let memoryLookup = Dictionary(uniqueKeysWithValues: allMemories.map { ($0.id, $0) })
+
+        // 1. Three ranked lists (all operating on the same candidate set)
+        let vectorResults  = vectorSearch(embedding: queryEmbedding, memories: allMemories, topK: candidateK)
+        let keywordResults = keywordSearch(query: query, memories: allMemories, topK: candidateK)
+        let graphResults   = graphNeighborSearch(seedMemories: vectorResults, memoryLookup: memoryLookup, topK: candidateK)
 
         // 2. Build rank maps (1-based)
         func rankMap(_ results: [ScoredMemory]) -> [UUID: Int] {
@@ -53,11 +64,7 @@ public actor HybridSearch {
         allIds.formUnion(kRanks.keys)
         allIds.formUnion(gRanks.keys)
 
-        // 4. Build memory lookup (load once)
-        let allMemories = await memoryGraphStore.getAllMemories()
-        let memoryLookup = Dictionary(uniqueKeysWithValues: allMemories.map { ($0.id, $0) })
-
-        // 5. RRF score: Σ 1/(k + rank_i). Missing from list → penalty rank = candidateK+1
+        // 4. RRF score: Σ 1/(k + rank_i). Missing from list → penalty rank = candidateK+1
         let penalty = Float(candidateK + 1)
         var scored = [ScoredMemory]()
         for id in allIds {
@@ -76,10 +83,8 @@ public actor HybridSearch {
     // MARK: - Graph Neighbor Search
 
     /// Collect 1-hop neighbors of the top-5 seed results, scored by edge confidence
-    private func graphNeighborSearch(seedMemories: [ScoredMemory], topK: Int) async -> [ScoredMemory] {
+    private func graphNeighborSearch(seedMemories: [ScoredMemory], memoryLookup: [UUID: MemoryNode], topK: Int) -> [ScoredMemory] {
         let seeds = Array(seedMemories.prefix(5))
-        let allMemories = await memoryGraphStore.getAllMemories()
-        let memoryLookup = Dictionary(uniqueKeysWithValues: allMemories.map { ($0.id, $0) })
 
         var neighborScores = [UUID: Float]()
         for seed in seeds {
@@ -98,39 +103,31 @@ public actor HybridSearch {
         results.sort { $0.score > $1.score }
         return Array(results.prefix(topK))
     }
-    
+
     // MARK: - Vector Search
-    
-    private func vectorSearch(embedding: [Float], topK: Int) async throws -> [ScoredMemory] {
-        let allMemories = await memoryGraphStore.getAllMemories()
-        
+
+    private func vectorSearch(embedding: [Float], memories: [MemoryNode], topK: Int) -> [ScoredMemory] {
         var scored: [ScoredMemory] = []
-        
-        for memory in allMemories {
+        for memory in memories {
             let similarity = cosineSimilarity(embedding, memory.embedding)
             scored.append(ScoredMemory(memory: memory, score: similarity))
         }
-        
         scored.sort { $0.score > $1.score }
         return Array(scored.prefix(topK))
     }
-    
+
     // MARK: - Keyword Search (BM25-like)
-    
-    private func keywordSearch(query: String, topK: Int) async -> [ScoredMemory] {
+
+    private func keywordSearch(query: String, memories: [MemoryNode], topK: Int) -> [ScoredMemory] {
         let queryTerms = tokenize(query)
-        let allMemories = await memoryGraphStore.getAllMemories()
-        
-        let totalDocs = allMemories.count
-        let avgDocLength = allMemories.isEmpty ? 50.0 : Float(allMemories.reduce(0) { $0 + tokenize($1.content).count }) / Float(totalDocs)
-        
+        let totalDocs = memories.count
+        let avgDocLength = memories.isEmpty ? 50.0 : Float(memories.reduce(0) { $0 + tokenize($1.content).count }) / Float(totalDocs)
+
         var scored: [ScoredMemory] = []
-        
-        for memory in allMemories {
+        for memory in memories {
             let score = bm25Score(queryTerms: queryTerms, document: memory.content, totalDocs: totalDocs, avgDocLength: avgDocLength)
             scored.append(ScoredMemory(memory: memory, score: score))
         }
-        
         scored.sort { $0.score > $1.score }
         return Array(scored.prefix(topK))
     }

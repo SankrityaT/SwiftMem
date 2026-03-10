@@ -20,21 +20,8 @@ public actor BatchOperations {
     ) async throws -> [MemoryNode] {
         print("📦 [BatchOps] Adding \(contents.count) memories in batch...")
         
-        // Generate embeddings in parallel
-        let embeddings = try await withThrowingTaskGroup(of: (Int, [Float]).self) { group in
-            for (index, content) in contents.enumerated() {
-                group.addTask {
-                    let embedding = try await self.embedder.embed(content)
-                    return (index, embedding)
-                }
-            }
-            
-            var results: [(Int, [Float])] = []
-            for try await result in group {
-                results.append(result)
-            }
-            return results.sorted { $0.0 < $1.0 }.map { $0.1 }
-        }
+        // Generate embeddings serially via batch API (llama.cpp context is not thread-safe)
+        let embeddings = try await embedder.embedBatch(contents)
         
         // Create memory nodes
         var newMemories: [MemoryNode] = []
@@ -138,21 +125,8 @@ public actor BatchOperations {
     ) async throws -> [[MemoryNode]] {
         print("📦 [BatchOps] Searching \(queries.count) queries in batch...")
         
-        // Generate query embeddings in parallel
-        let queryEmbeddings = try await withThrowingTaskGroup(of: (Int, [Float]).self) { group in
-            for (index, query) in queries.enumerated() {
-                group.addTask {
-                    let embedding = try await self.embedder.embed(query)
-                    return (index, embedding)
-                }
-            }
-            
-            var results: [(Int, [Float])] = []
-            for try await result in group {
-                results.append(result)
-            }
-            return results.sorted { $0.0 < $1.0 }.map { $0.1 }
-        }
+        // Generate query embeddings serially via batch API (llama.cpp context is not thread-safe)
+        let queryEmbeddings = try await embedder.embedBatch(queries)
         
         // Search for each query
         var allResults: [[MemoryNode]] = []
