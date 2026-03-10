@@ -19,13 +19,15 @@ let package = Package(
         )
     ],
     dependencies: [
-        .package(url: "https://github.com/SankrityaT/OnDeviceCatalyst.git", branch: "main")
+        .package(url: "https://github.com/SankrityaT/OnDeviceCatalyst.git", branch: "main"),
+        .package(url: "https://github.com/jkrukowski/swift-embeddings.git", from: "0.0.1")
     ],
     targets: [
         .target(
             name: "SwiftMem",
             dependencies: [
-                .product(name: "OnDeviceCatalyst", package: "OnDeviceCatalyst")
+                .product(name: "OnDeviceCatalyst", package: "OnDeviceCatalyst"),
+                .product(name: "Embeddings", package: "swift-embeddings")
             ],
             path: "SwiftMem",
             exclude: [

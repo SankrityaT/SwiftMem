@@ -35,6 +35,10 @@ public struct MemoryDecayConfig {
 
 /// Configuration for on-device LLM features (extraction, reranking, classification)
 public struct LLMConfig {
+    /// CoreML embedding model (runs on ANE/CPU, zero GPU memory).
+    /// Takes priority over GGUF embeddingModel when set. Requires iOS 18+.
+    public var coreMLEmbeddingModel: CoreMLEmbeddingModel?
+
     /// Preset embedding model (auto-downloads from HuggingFace on first use)
     public var embeddingModel: CatalystModel?
 
@@ -80,6 +84,7 @@ public struct LLMConfig {
     public var hydeMaxTokens: Int
 
     public init(
+        coreMLEmbeddingModel: CoreMLEmbeddingModel? = nil,
         embeddingModel: CatalystModel? = nil,
         completionModel: CatalystModel? = nil,
         embeddingModelPath: String? = nil,
@@ -95,6 +100,7 @@ public struct LLMConfig {
         enableHyDE: Bool = false,
         hydeMaxTokens: Int = 150
     ) {
+        self.coreMLEmbeddingModel = coreMLEmbeddingModel
         self.embeddingModel = embeddingModel
         self.completionModel = completionModel
         self.embeddingModelPath = embeddingModelPath

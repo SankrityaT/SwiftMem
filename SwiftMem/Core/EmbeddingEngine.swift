@@ -31,10 +31,30 @@ public protocol Embedder: Sendable {
 extension EmbeddingEngine {
 
     /// Create the best available embedder based on config.
-    /// Resolves preset models (auto-downloads from HuggingFace), tries explicit path,
-    /// validates with test embedding, then falls back to NLEmbedder on any failure.
+    /// Priority: CoreML (ANE/CPU, zero GPU) > GGUF (Metal GPU) > NLEmbedder (built-in).
     /// Download progress is published to `SwiftMemDownloadState.shared` for SwiftUI observation.
     public static func createBestEmbedder(config: SwiftMemConfig) async -> Embedder {
+        // 1. Try CoreML embedding (runs on ANE/CPU — safe alongside MLX models)
+        if let coreMLModel = config.llmConfig.coreMLEmbeddingModel {
+            if #available(iOS 18.0, macOS 15.0, *) {
+                do {
+                    let embedder = try await BertCoreMLEmbedder.load(model: coreMLModel)
+                    let testEmb = try await embedder.embed("test")
+                    guard testEmb.count == embedder.dimensions else {
+                        print("⚠️ [EmbeddingEngine] CoreML dimension mismatch, falling back")
+                        return NLEmbedder()
+                    }
+                    print("✅ [EmbeddingEngine] Using CoreML \(coreMLModel.displayName) (\(embedder.dimensions)d, ANE/CPU)")
+                    return embedder
+                } catch {
+                    print("⚠️ [EmbeddingEngine] CoreML embedder failed: \(error.localizedDescription), trying GGUF...")
+                }
+            } else {
+                print("⚠️ [EmbeddingEngine] CoreML embeddings require iOS 18+ — trying GGUF...")
+            }
+        }
+
+        // 2. Try GGUF embedding (Metal GPU — may compete with MLX models for memory)
         // Resolve model path: preset model > explicit path
         var modelPath = config.llmConfig.embeddingModelPath
         var architecture = config.llmConfig.embeddingArchitecture

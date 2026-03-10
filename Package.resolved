@@ -23,7 +23,17 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/SankrityaT/OnDeviceCatalyst.git",
       "state" : {
-        "branch" : "main"
+        "branch" : "main",
+        "revision" : "f76620236a1eeebb226c8ada24f2f83746780ed4"
+      }
+    },
+    {
+      "identity" : "swift-argument-parser",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-argument-parser.git",
+      "state" : {
+        "revision" : "c5d11a805e765f52ba34ec7284bd4fcd6ba68615",
+        "version" : "1.7.0"
       }
     },
     {
@@ -54,6 +64,15 @@
       }
     },
     {
+      "identity" : "swift-embeddings",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/jkrukowski/swift-embeddings.git",
+      "state" : {
+        "revision" : "66994e3b3ed172a9b691b59d11bd0702c3f5eb33",
+        "version" : "0.0.26"
+      }
+    },
+    {
       "identity" : "swift-jinja",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/huggingface/swift-jinja.git",
@@ -69,6 +88,24 @@
       "state" : {
         "revision" : "0c0290ff6b24942dadb83a929ffaaa1481df04a2",
         "version" : "1.1.1"
+      }
+    },
+    {
+      "identity" : "swift-safetensors",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/jkrukowski/swift-safetensors.git",
+      "state" : {
+        "revision" : "3852f0bd561071588361c26c49c016d344234c60",
+        "version" : "0.1.1"
+      }
+    },
+    {
+      "identity" : "swift-sentencepiece",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/jkrukowski/swift-sentencepiece",
+      "state" : {
+        "revision" : "36a8b2b45733f6adb3092100f16e4c7d38a10a7c",
+        "version" : "0.0.6"
       }
     },
     {
