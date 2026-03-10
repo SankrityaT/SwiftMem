@@ -13,11 +13,18 @@ public actor MemoryExtractor {
     private let config: SwiftMemConfig
     private let relationshipDetector: RelationshipDetector
     private var llmService: LLMService?
+    private var memoryGraphStore: MemoryGraphStore?
 
-    public init(config: SwiftMemConfig, relationshipDetector: RelationshipDetector, llmService: LLMService? = nil) {
+    public init(
+        config: SwiftMemConfig,
+        relationshipDetector: RelationshipDetector,
+        llmService: LLMService? = nil,
+        memoryGraphStore: MemoryGraphStore? = nil
+    ) {
         self.config = config
         self.relationshipDetector = relationshipDetector
         self.llmService = llmService
+        self.memoryGraphStore = memoryGraphStore
     }
     
     // MARK: - Memory Extraction
@@ -268,6 +275,71 @@ public actor MemoryExtractor {
         return min(importance, 1.0)
     }
     
+    // MARK: - v3 Contradiction Detection
+
+    /// Called after a new memory is stored (fire-and-forget from SwiftMemAPI.add).
+    /// Finds existing memories with cosine similarity ≥ threshold, confirms via LLM or heuristic,
+    /// then soft-deletes the superseded relationship using bi-temporal invalidation.
+    public func detectAndHandleContradictions(
+        newMemory: MemoryNode,
+        allMemories: [MemoryNode]
+    ) async {
+        let threshold = config.contradictionSimilarityThreshold
+
+        let candidates = allMemories.filter { existing in
+            guard existing.id != newMemory.id,
+                  !existing.embedding.isEmpty,
+                  !newMemory.embedding.isEmpty else { return false }
+            return embeddingCosineSimilarity(newMemory.embedding, existing.embedding) >= threshold
+        }
+
+        guard !candidates.isEmpty else { return }
+
+        for candidate in candidates {
+            let isContradiction: Bool
+            if config.llmConfig.enableLLMExtraction,
+               let llm = llmService,
+               await llm.isAvailable {
+                isContradiction = await confirmContradictionWithLLM(newMemory: newMemory, existing: candidate, llm: llm)
+            } else {
+                isContradiction = heuristicContradiction(newMemory: newMemory, existing: candidate)
+            }
+
+            guard isContradiction, let store = memoryGraphStore else { continue }
+
+            // Soft-delete the superseded memory's related-to edge
+            try? await store.invalidateRelationship(
+                from: candidate.id,
+                to: newMemory.id,
+                type: .relatedTo
+            )
+            print("⚡ [MemoryExtractor] Contradiction resolved: invalidated edge from \(String(candidate.content.prefix(50)))")
+        }
+    }
+
+    private func confirmContradictionWithLLM(newMemory: MemoryNode, existing: MemoryNode, llm: LLMService) async -> Bool {
+        let prompt = """
+        Do these two memories contradict each other (YES or NO)?
+        A: \(existing.content)
+        B: \(newMemory.content)
+        """
+        guard let response = await llm.complete(
+            prompt: prompt,
+            systemPrompt: "Answer ONLY YES or NO.",
+            maxTokens: 10
+        ) else { return false }
+        return response.uppercased().contains("YES")
+    }
+
+    private func heuristicContradiction(newMemory: MemoryNode, existing: MemoryNode) -> Bool {
+        // Shared entities + replacement language = likely contradiction
+        let sharedEntities = Set(newMemory.metadata.entities).intersection(Set(existing.metadata.entities))
+        guard !sharedEntities.isEmpty else { return false }
+        let replacementWords = ["no longer", "not anymore", "moved to", "now works", "switched to", "changed to"]
+        let newLower = newMemory.content.lowercased()
+        return replacementWords.contains { newLower.contains($0) }
+    }
+
     // MARK: - Batch Processing
     
     /// Extract memories from multiple conversations

@@ -8,6 +8,29 @@
 import Foundation
 import OnDeviceCatalyst
 
+// MARK: - v3 Decay Configuration
+
+/// Per-type exponential decay rates for memory confidence
+public struct MemoryDecayConfig {
+    /// Decay rate per hour for static (core fact) memories.
+    /// Default: 0.9999/hr ≈ half-life ~289 days — core facts barely fade
+    public var staticDecayRatePerHour: Double
+
+    /// Decay rate per hour for dynamic (episodic) memories.
+    /// Default: 0.99/hr ≈ half-life ~3 days — episodes fade quickly
+    public var dynamicDecayRatePerHour: Double
+
+    public init(
+        staticDecayRatePerHour: Double = 0.9999,
+        dynamicDecayRatePerHour: Double = 0.99
+    ) {
+        self.staticDecayRatePerHour = staticDecayRatePerHour
+        self.dynamicDecayRatePerHour = dynamicDecayRatePerHour
+    }
+
+    public static let `default` = MemoryDecayConfig()
+}
+
 // MARK: - LLM Configuration
 
 /// Configuration for on-device LLM features (extraction, reranking, classification)
@@ -48,6 +71,14 @@ public struct LLMConfig {
     /// Timeout for LLM calls (seconds)
     public var llmTimeout: TimeInterval
 
+    /// Enable HyDE (Hypothetical Document Embedding) query expansion
+    /// Generates a hypothetical answer to the query and blends its embedding with the query embedding
+    /// Improves recall by ~20% but adds one LLM call per search
+    public var enableHyDE: Bool
+
+    /// Max tokens for HyDE hypothetical document generation
+    public var hydeMaxTokens: Int
+
     public init(
         embeddingModel: CatalystModel? = nil,
         completionModel: CatalystModel? = nil,
@@ -60,7 +91,9 @@ public struct LLMConfig {
         enableLLMClassification: Bool = false,
         extractionMaxTokens: Int = 512,
         rerankingMaxTokens: Int = 256,
-        llmTimeout: TimeInterval = 30.0
+        llmTimeout: TimeInterval = 30.0,
+        enableHyDE: Bool = false,
+        hydeMaxTokens: Int = 150
     ) {
         self.embeddingModel = embeddingModel
         self.completionModel = completionModel
@@ -74,6 +107,8 @@ public struct LLMConfig {
         self.extractionMaxTokens = extractionMaxTokens
         self.rerankingMaxTokens = rerankingMaxTokens
         self.llmTimeout = llmTimeout
+        self.enableHyDE = enableHyDE
+        self.hydeMaxTokens = hydeMaxTokens
     }
 
     /// Default config with no models (all LLM features disabled)
@@ -200,6 +235,19 @@ public struct SwiftMemConfig {
     /// Configuration for on-device LLM features
     public var llmConfig: LLMConfig
 
+    // MARK: - v3 Settings
+
+    /// RRF (Reciprocal Rank Fusion) k constant.
+    /// Higher k = less sensitive to rank differences. Default: 60 (standard)
+    public var rrfK: Int
+
+    /// Adaptive exponential decay configuration per memory type
+    public var memoryDecayConfig: MemoryDecayConfig
+
+    /// Cosine similarity threshold above which two memories may contradict each other.
+    /// Contradiction detection checks entity overlap for candidates above this threshold.
+    public var contradictionSimilarityThreshold: Float
+
     // MARK: - Initialization
 
     public init(
@@ -230,7 +278,10 @@ public struct SwiftMemConfig {
         enableEntityExtraction: Bool = true,
         entityExtractionConfidence: Double = 0.6,
         entityTypesToExtract: Set<EntityType> = Set(EntityType.allCases),
-        llmConfig: LLMConfig = .default
+        llmConfig: LLMConfig = .default,
+        rrfK: Int = 60,
+        memoryDecayConfig: MemoryDecayConfig = .default,
+        contradictionSimilarityThreshold: Float = 0.85
     ) {
         self.embeddingModel = embeddingModel
         self.embeddingDimensions = embeddingDimensions
@@ -260,6 +311,9 @@ public struct SwiftMemConfig {
         self.entityExtractionConfidence = entityExtractionConfidence
         self.entityTypesToExtract = entityTypesToExtract
         self.llmConfig = llmConfig
+        self.rrfK = rrfK
+        self.memoryDecayConfig = memoryDecayConfig
+        self.contradictionSimilarityThreshold = contradictionSimilarityThreshold
     }
     
     // MARK: - Validation

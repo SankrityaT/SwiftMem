@@ -149,6 +149,27 @@ public actor LLMService {
         }
     }
 
+    // MARK: - HyDE (Hypothetical Document Embedding)
+
+    /// Generate a hypothetical memory document for query expansion (HyDE).
+    /// Given "what food do I prefer?" returns a plausible memory like "User loves sushi and avoids spicy food."
+    /// Returns nil on any failure — caller blends result 50/50 with original query embedding.
+    public func generateHypotheticalDocument(query: String, maxTokens: Int = 150) async -> String? {
+        let prompt = """
+        Given this search query about a person's memories, write a single plausible stored memory that would answer it.
+        Write as a concise factual statement (1-2 sentences). Be specific.
+
+        Query: \(query)
+
+        Memory:
+        """
+        return await complete(
+            prompt: prompt,
+            systemPrompt: "You are a memory content generator. Write realistic, specific memory facts in 1-2 sentences.",
+            maxTokens: maxTokens
+        )
+    }
+
     // MARK: - Cleanup
 
     /// Release the loaded model to free memory

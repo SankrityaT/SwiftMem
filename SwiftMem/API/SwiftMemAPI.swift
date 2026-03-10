@@ -47,6 +47,9 @@ public actor SwiftMemAPI {
     private var llmService: LLMService?
     private var llmReranker: LLMReranker?
 
+    // v3
+    private var temporalQueryParser: TemporalQueryParser?
+
     private var isInitialized = false
     
     private init() {
@@ -105,12 +108,16 @@ public actor SwiftMemAPI {
 
         self.relationshipDetector = RelationshipDetector(config: updatedConfig)
 
-        // Phase 2: MemoryExtractor with LLM extraction
+        // Phase 2 + v3: MemoryExtractor with LLM extraction + contradiction detection
         self.memoryExtractor = MemoryExtractor(
             config: updatedConfig,
             relationshipDetector: relationshipDetector!,
-            llmService: self.llmService
+            llmService: self.llmService,
+            memoryGraphStore: self.memoryGraphStore
         )
+
+        // v3: Temporal query parser (stateless, recreated per-search for fresh reference date)
+        self.temporalQueryParser = TemporalQueryParser()
 
         self.hybridSearch = HybridSearch(memoryGraphStore: memoryGraphStore!, config: updatedConfig)
         self.reranker = Reranker(config: updatedConfig)
@@ -376,31 +383,66 @@ public actor SwiftMemAPI {
         // Store memory in MemoryGraphStore with classification
         try await store.addMemory(finalMemory)
         print("💾 [SwiftMemAPI] Stored memory with \(finalMemory.relationships.count) relationships")
+
+        // v3: Contradiction detection (fire-and-forget — never blocks add latency)
+        if let extractor = memoryExtractor {
+            let allMemories = await store.getAllMemories()
+            Task {
+                await extractor.detectAndHandleContradictions(
+                    newMemory: finalMemory,
+                    allMemories: allMemories
+                )
+            }
+        }
     }
     
-    /// Search memories with optional container tag filtering
+    /// Search memories with optional container tag filtering and temporal grounding
     public func search(
         query: String,
         userId: String,
         limit: Int = 10,
-        containerTags: [String] = []
+        containerTags: [String] = [],
+        temporalFilter: DateInterval? = nil
     ) async throws -> [MemoryResult] {
         guard let embedder = embedder, let store = memoryGraphStore else {
             throw SwiftMemError.notInitialized
         }
-        
+
         // Generate query embedding
-        let queryEmbedding = try await embedder.embed(query)
+        var queryEmbedding = try await embedder.embed(query)
+
+        // v3: HyDE query expansion — blend hypothetical memory embedding 50/50 with query
+        if config.llmConfig.enableHyDE, let llm = llmService, await llm.isAvailable {
+            if let hypothetical = await llm.generateHypotheticalDocument(
+                query: query,
+                maxTokens: config.llmConfig.hydeMaxTokens
+            ), let hydeEmbedding = try? await embedder.embed(hypothetical) {
+                queryEmbedding = zip(queryEmbedding, hydeEmbedding).map { ($0 + $1) / 2.0 }
+                print("🔮 [SwiftMemAPI] HyDE: blended query embedding with hypothetical document")
+            }
+        }
+
+        // v3: Temporal filter — explicit param takes priority, then auto-parse from query
+        let effectiveTemporalFilter: DateInterval?
+        if let explicit = temporalFilter {
+            effectiveTemporalFilter = explicit
+        } else {
+            let parser = TemporalQueryParser(referenceDate: Date())
+            let parsed = parser.parse(query)
+            effectiveTemporalFilter = parsed.interval
+            if parsed.isTemporalQuery {
+                print("🕐 [SwiftMemAPI] Temporal filter detected: \(parsed.description)")
+            }
+        }
         
         // Search in MemoryGraphStore with similarity scores
         let allMemories = await store.getAllMemories()
         
         // MEMORY DECAY: Filter out low-confidence memories
         let confidenceThreshold: Float = 0.3
-        
-        // SEARCH THRESHOLD: Use 0.3 for broad search
-        // 0.6 is too strict for initial queries
-        let searchThreshold: Float = 0.3
+
+        // v3: RRF scores are ~0.016-0.05 (not cosine 0-1), so no score threshold needed
+        // Ordering by RRF already guarantees relevance — just take top-N
         
         let activeMemories = allMemories.filter { memory in
             let confidence = memory.effectiveConfidence()
@@ -453,16 +495,25 @@ public actor SwiftMemAPI {
             return (scoredMemory.memory, score)
         }
         
-        print("📊 [SwiftMemAPI] Top scores before filtering: \(boostedResults.prefix(5).map { $0.1 })")
-        
-        // Filter by search threshold and take top results
-        let initialResults = boostedResults
-            .filter { $0.1 >= searchThreshold }  // Min 0.3 similarity
-            .prefix(limit)
-        
-        print("📊 [SwiftMemAPI] Initial top \(initialResults.count) results (threshold: \(searchThreshold)):")
+        print("📊 [SwiftMemAPI] Top RRF scores: \(boostedResults.prefix(5).map { String(format: "%.4f", $0.1) })")
+
+        // v3: Apply temporal filter if present
+        let temporallyFiltered: [(MemoryNode, Float)]
+        if let interval = effectiveTemporalFilter {
+            let temporalIds = await store.getMemoriesInDateRange(interval).map { $0.id }
+            let idSet = Set(temporalIds)
+            temporallyFiltered = boostedResults.filter { idSet.contains($0.0.id) }
+            print("🕐 [SwiftMemAPI] Temporal filter: \(temporallyFiltered.count)/\(boostedResults.count) memories in range")
+        } else {
+            temporallyFiltered = boostedResults
+        }
+
+        // Take top results (no score threshold — RRF ordering guarantees relevance)
+        let initialResults = temporallyFiltered.prefix(limit)
+
+        print("📊 [SwiftMemAPI] Initial top \(initialResults.count) results:")
         for (i, (memory, score)) in initialResults.enumerated() {
-            print("  \(i+1). Score: \(score) - \(String(memory.content.prefix(60)))...")
+            print("  \(i+1). RRF: \(String(format: "%.4f", score)) - \(String(memory.content.prefix(60)))...")
         }
         
         // GRAPH-BASED EXPANSION: Follow relationships to find related memories

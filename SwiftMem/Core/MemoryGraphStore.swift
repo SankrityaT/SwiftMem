@@ -143,6 +143,84 @@ public actor MemoryGraphStore {
         }
         
         print("✅ [MemoryGraphStore] Schema initialized successfully")
+
+        // v3: Bi-temporal migration (idempotent)
+        try await migrateToV3Schema()
+    }
+
+    // MARK: - v3 Schema Migration
+
+    private func migrateToV3Schema() async throws {
+        guard let db = db else { return }
+
+        // Check if already migrated
+        let currentVersion = getMetadataValue(key: "schema_version") ?? "0"
+        guard currentVersion < "3" else { return }
+
+        // Check existing columns via PRAGMA
+        let pragmaSQL = "PRAGMA table_info(memory_relationships);"
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, pragmaSQL, -1, &stmt, nil) == SQLITE_OK else { return }
+        var hasValidAt = false, hasInvalidAt = false
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            if let nameCStr = sqlite3_column_text(stmt, 1) {
+                let name = String(cString: nameCStr)
+                if name == "valid_at"   { hasValidAt = true }
+                if name == "invalid_at" { hasInvalidAt = true }
+            }
+        }
+        sqlite3_finalize(stmt)
+
+        // Add columns (ALTER TABLE is additive — safe on existing data)
+        if !hasValidAt {
+            try execute("ALTER TABLE memory_relationships ADD COLUMN valid_at TEXT;")
+        }
+        if !hasInvalidAt {
+            try execute("ALTER TABLE memory_relationships ADD COLUMN invalid_at TEXT;")
+        }
+
+        // Backfill valid_at for existing rows
+        try execute("UPDATE memory_relationships SET valid_at = timestamp WHERE valid_at IS NULL;")
+
+        // Index for active-relationship queries
+        try execute("""
+            CREATE INDEX IF NOT EXISTS idx_memory_relationships_invalid_at
+            ON memory_relationships(invalid_at);
+        """)
+
+        try setMetadataValue(key: "schema_version", value: "3")
+        print("✅ [MemoryGraphStore] Migrated to v3 bi-temporal schema")
+    }
+
+    // MARK: - Generic Metadata Helpers
+
+    private func getMetadataValue(key: String) -> String? {
+        guard let db = db else { return nil }
+        let sql = "SELECT value FROM swiftmem_metadata WHERE key = ?;"
+        var stmt: OpaquePointer?
+        defer { sqlite3_finalize(stmt) }
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+        key.withCString { sqlite3_bind_text(stmt, 1, $0, -1, SQLITE_TRANSIENT) }
+        guard sqlite3_step(stmt) == SQLITE_ROW,
+              let valueCStr = sqlite3_column_text(stmt, 0) else { return nil }
+        return String(cString: valueCStr)
+    }
+
+    private func setMetadataValue(key: String, value: String) throws {
+        guard let db = db else {
+            throw SwiftMemError.storageError("Database not initialized")
+        }
+        let sql = "INSERT OR REPLACE INTO swiftmem_metadata (key, value) VALUES (?, ?);"
+        var stmt: OpaquePointer?
+        defer { sqlite3_finalize(stmt) }
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw SwiftMemError.storageError("Failed to prepare metadata insert")
+        }
+        key.withCString   { sqlite3_bind_text(stmt, 1, $0, -1, SQLITE_TRANSIENT) }
+        value.withCString { sqlite3_bind_text(stmt, 2, $0, -1, SQLITE_TRANSIENT) }
+        guard sqlite3_step(stmt) == SQLITE_DONE else {
+            throw SwiftMemError.storageError("Failed to set metadata: \(key)")
+        }
     }
     
     // MARK: - Metadata Operations
@@ -699,7 +777,8 @@ public actor MemoryGraphStore {
     private func loadRelationshipsIntoGraph() async throws {
         guard let db = db else { return }
         
-        let sql = "SELECT source_id, target_id, type, confidence FROM memory_relationships;"
+        // v3: Only load active (non-invalidated) relationships
+        let sql = "SELECT source_id, target_id, type, confidence FROM memory_relationships WHERE invalid_at IS NULL;"
         
         var statement: OpaquePointer?
         defer { sqlite3_finalize(statement) }
@@ -729,8 +808,51 @@ public actor MemoryGraphStore {
         print("🔗 [MemoryGraphStore] Loaded \(relationshipCount) relationships from database")
     }
     
+    // MARK: - v3 Bi-temporal Operations
+
+    /// Soft-delete a relationship by setting invalid_at (bi-temporal invalidation).
+    /// Used when a contradiction supersedes an old fact. Preserves history.
+    public func invalidateRelationship(
+        from sourceId: UUID,
+        to targetId: UUID,
+        type: RelationType
+    ) async throws {
+        guard let db = db else {
+            throw SwiftMemError.storageError("Database not initialized")
+        }
+        let sql = """
+            UPDATE memory_relationships
+            SET invalid_at = ?
+            WHERE source_id = ? AND target_id = ? AND type = ? AND invalid_at IS NULL;
+        """
+        var stmt: OpaquePointer?
+        defer { sqlite3_finalize(stmt) }
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw SwiftMemError.storageError("Failed to prepare invalidateRelationship")
+        }
+        let nowStr    = ISO8601DateFormatter().string(from: Date())
+        let sourceStr = sourceId.uuidString
+        let targetStr = targetId.uuidString
+        let typeStr   = type.rawValue
+        nowStr.withCString    { sqlite3_bind_text(stmt, 1, $0, -1, SQLITE_TRANSIENT) }
+        sourceStr.withCString { sqlite3_bind_text(stmt, 2, $0, -1, SQLITE_TRANSIENT) }
+        targetStr.withCString { sqlite3_bind_text(stmt, 3, $0, -1, SQLITE_TRANSIENT) }
+        typeStr.withCString   { sqlite3_bind_text(stmt, 4, $0, -1, SQLITE_TRANSIENT) }
+        sqlite3_step(stmt)
+    }
+
+    /// Fetch memories whose timestamp (or eventDate) falls within a DateInterval.
+    /// Used by TemporalQueryParser integration in SwiftMemAPI.search().
+    public func getMemoriesInDateRange(_ interval: DateInterval) async -> [MemoryNode] {
+        let all = await memoryGraph.getAllNodes()
+        return all.filter { node in
+            let effectiveDate = node.eventDate ?? node.timestamp
+            return effectiveDate >= interval.start && effectiveDate <= interval.end
+        }
+    }
+
     // MARK: - Bulk Operations
-    
+
     /// Clear all memories and relationships from both in-memory graph and database
     public func clearAll() async throws {
         await memoryGraph.clearAll()

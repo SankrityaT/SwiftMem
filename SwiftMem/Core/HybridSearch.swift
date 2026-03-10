@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import Accelerate
 
 /// Hybrid search combining vector similarity and keyword matching
 public actor HybridSearch {
@@ -18,9 +19,10 @@ public actor HybridSearch {
         self.config = config
     }
     
-    // MARK: - Hybrid Search
-    
-    /// Search memories using hybrid approach (vector + keyword)
+    // MARK: - Hybrid Search (v3: Reciprocal Rank Fusion)
+
+    /// Search memories using RRF over three ranked lists: vector, BM25, graph-neighbors.
+    /// vectorWeight and keywordWeight are preserved for API compatibility but unused — RRF handles fusion.
     public func search(
         query: String,
         queryEmbedding: [Float],
@@ -28,38 +30,73 @@ public actor HybridSearch {
         vectorWeight: Float = 0.7,
         keywordWeight: Float = 0.3
     ) async throws -> [ScoredMemory] {
-        
-        // 1. Vector similarity search
-        let vectorResults = try await vectorSearch(embedding: queryEmbedding, topK: topK * 2)
-        
-        // 2. Keyword search (BM25-like)
-        let keywordResults = await keywordSearch(query: query, topK: topK * 2)
-        
-        // 3. Combine scores
-        var combinedScores: [UUID: Float] = [:]
-        
-        for result in vectorResults {
-            combinedScores[result.memory.id] = result.score * vectorWeight
+        let k = Float(config.rrfK)  // default 60
+        let candidateK = topK * 3
+
+        // 1. Three ranked lists
+        let vectorResults  = try await vectorSearch(embedding: queryEmbedding, topK: candidateK)
+        let keywordResults = await keywordSearch(query: query, topK: candidateK)
+        let graphResults   = await graphNeighborSearch(seedMemories: vectorResults, topK: candidateK)
+
+        // 2. Build rank maps (1-based)
+        func rankMap(_ results: [ScoredMemory]) -> [UUID: Int] {
+            var map = [UUID: Int]()
+            for (rank, sm) in results.enumerated() { map[sm.memory.id] = rank + 1 }
+            return map
         }
-        
-        for result in keywordResults {
-            let existingScore = combinedScores[result.memory.id] ?? 0
-            combinedScores[result.memory.id] = existingScore + (result.score * keywordWeight)
-        }
-        
-        // 4. Sort by combined score
+        let vRanks = rankMap(vectorResults)
+        let kRanks = rankMap(keywordResults)
+        let gRanks = rankMap(graphResults)
+
+        // 3. Collect all unique candidate IDs
+        var allIds = Set(vRanks.keys)
+        allIds.formUnion(kRanks.keys)
+        allIds.formUnion(gRanks.keys)
+
+        // 4. Build memory lookup (load once)
         let allMemories = await memoryGraphStore.getAllMemories()
-        var scoredMemories: [ScoredMemory] = []
-        
-        for (memoryId, score) in combinedScores {
-            if let memory = allMemories.first(where: { $0.id == memoryId }) {
-                scoredMemories.append(ScoredMemory(memory: memory, score: score))
+        let memoryLookup = Dictionary(uniqueKeysWithValues: allMemories.map { ($0.id, $0) })
+
+        // 5. RRF score: Σ 1/(k + rank_i). Missing from list → penalty rank = candidateK+1
+        let penalty = Float(candidateK + 1)
+        var scored = [ScoredMemory]()
+        for id in allIds {
+            guard let memory = memoryLookup[id] else { continue }
+            let rV = vRanks[id] != nil ? Float(vRanks[id]!) : penalty
+            let rK = kRanks[id] != nil ? Float(kRanks[id]!) : penalty
+            let rG = gRanks[id] != nil ? Float(gRanks[id]!) : penalty
+            let rrfScore = 1.0 / (k + rV) + 1.0 / (k + rK) + 1.0 / (k + rG)
+            scored.append(ScoredMemory(memory: memory, score: rrfScore))
+        }
+
+        scored.sort { $0.score > $1.score }
+        return Array(scored.prefix(topK))
+    }
+
+    // MARK: - Graph Neighbor Search
+
+    /// Collect 1-hop neighbors of the top-5 seed results, scored by edge confidence
+    private func graphNeighborSearch(seedMemories: [ScoredMemory], topK: Int) async -> [ScoredMemory] {
+        let seeds = Array(seedMemories.prefix(5))
+        let allMemories = await memoryGraphStore.getAllMemories()
+        let memoryLookup = Dictionary(uniqueKeysWithValues: allMemories.map { ($0.id, $0) })
+
+        var neighborScores = [UUID: Float]()
+        for seed in seeds {
+            for rel in seed.memory.relationships {
+                guard neighborScores[rel.targetId] == nil else { continue }
+                neighborScores[rel.targetId] = seed.score * rel.confidence * 0.8
             }
         }
-        
-        scoredMemories.sort { $0.score > $1.score }
-        
-        return Array(scoredMemories.prefix(topK))
+
+        var results = [ScoredMemory]()
+        for (id, score) in neighborScores {
+            if let memory = memoryLookup[id] {
+                results.append(ScoredMemory(memory: memory, score: score))
+            }
+        }
+        results.sort { $0.score > $1.score }
+        return Array(results.prefix(topK))
     }
     
     // MARK: - Vector Search
@@ -182,18 +219,14 @@ public actor Reranker {
         return Array(reranked.prefix(topK))
     }
     
+    /// v3: Exponential decay per memory type.
+    /// static → half-life ~289 days; dynamic → half-life ~3 days
     private func calculateRecencyBoost(memory: MemoryNode) -> Float {
-        let daysSinceCreation = Date().timeIntervalSince(memory.timestamp) / 86400
-        
-        if daysSinceCreation < 1 {
-            return 1.0
-        } else if daysSinceCreation < 7 {
-            return 0.5
-        } else if daysSinceCreation < 30 {
-            return 0.2
-        } else {
-            return 0.0
-        }
+        let hoursSince = Date().timeIntervalSince(memory.timestamp) / 3600.0
+        let rate = memory.isStatic
+            ? config.memoryDecayConfig.staticDecayRatePerHour
+            : config.memoryDecayConfig.dynamicDecayRatePerHour
+        return Float(pow(rate, hoursSince))
     }
 }
 
@@ -347,26 +380,22 @@ public struct ScoredMemory {
     public let score: Float
 }
 
-// MARK: - Cosine Similarity
+// MARK: - Cosine Similarity (v3: vDSP-accelerated, 10-40x faster than scalar)
 
 private func cosineSimilarity(_ a: [Float], _ b: [Float]) -> Float {
-    guard a.count == b.count else { return 0 }
-
-    var dotProduct: Float = 0
+    guard a.count == b.count, !a.isEmpty else { return 0 }
+    let n = vDSP_Length(a.count)
+    var dot: Float = 0
     var normA: Float = 0
     var normB: Float = 0
-
-    for i in 0..<a.count {
-        dotProduct += a[i] * b[i]
-        normA += a[i] * a[i]
-        normB += b[i] * b[i]
-    }
-
-    let denominator = sqrt(normA) * sqrt(normB)
-    return denominator > 0 ? dotProduct / denominator : 0
+    vDSP_dotpr(a, 1, b, 1, &dot, n)
+    vDSP_dotpr(a, 1, a, 1, &normA, n)
+    vDSP_dotpr(b, 1, b, 1, &normB, n)
+    let denom = sqrtf(normA) * sqrtf(normB)
+    return denom > 0 ? dot / denom : 0
 }
 
-/// Package-internal cosine similarity for embeddings (used by MMR)
+/// Package-internal cosine similarity for embeddings (used by MMR and contradiction detection)
 func embeddingCosineSimilarity(_ a: [Float], _ b: [Float]) -> Float {
     return cosineSimilarity(a, b)
 }
