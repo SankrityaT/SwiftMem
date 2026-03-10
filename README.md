@@ -358,27 +358,116 @@ try await api.add(
 
 ---
 
-## Observing Model Download Progress
+## Model Download — Everything You Need to Know
+
+### When does the download happen?
+
+The model downloads automatically the **first time you call `api.initialize()`** with an `embeddingModel` set. After that it's cached permanently in `Application Support/OnDeviceCatalyst/Models/` — subsequent launches load from disk in ~2 seconds.
+
+| Model | HuggingFace source | Cached size |
+|---|---|---|
+| `nomicEmbedV1_5` | nomic-ai/nomic-embed-text-v1.5-GGUF (Q8_0) | ~550 MB |
+| `gteQwen2_1_5B` | mav23/gte-Qwen2-1.5B-instruct-GGUF (Q8_0) | ~1.6 GB |
+
+> The app needs internet access on first launch only. After that it works fully offline.
+
+### Show a download screen (recommended)
+
+SwiftMem ships a ready-made `ModelDownloadProgressView` overlay. Add it to your root view:
 
 ```swift
 import SwiftUI
 import SwiftMem
 
-struct ContentView: View {
-    @ObservedObject var downloadState = SwiftMemDownloadState.shared
-
-    var body: some View {
-        if downloadState.isDownloading {
-            VStack {
-                Text("Downloading \(downloadState.modelName ?? "model")...")
-                ProgressView(value: downloadState.progress)
-                Text("\(Int(downloadState.downloadedMB)) / \(Int(downloadState.totalMB)) MB")
-            }
-        } else {
-            MainAppView()
+@main
+struct MyApp: App {
+    var body: some Scene {
+        WindowGroup {
+            ContentView()
+                .overlay(ModelDownloadProgressView(state: SwiftMemDownloadState.shared))
         }
     }
 }
+```
+
+The overlay appears automatically while downloading/verifying and disappears when done. It shows model name, MB downloaded, percentage, and a "this only happens once" note.
+
+### Gate your UI on download completion
+
+```swift
+struct ContentView: View {
+    // @Observable — no @ObservedObject needed (Swift 5.9+)
+    var downloadState = SwiftMemDownloadState.shared
+
+    var body: some View {
+        switch downloadState.phase {
+        case .idle:
+            ProgressView("Initializing...")
+        case .downloading(let name, let progress, let dl, let total):
+            VStack {
+                Text("Downloading \(name)")
+                ProgressView(value: progress)
+                Text("\(dl) / \(total) MB")
+            }
+        case .verifying(let name):
+            VStack {
+                ProgressView()
+                Text("Verifying \(name)...")
+            }
+        case .ready:
+            MainAppView()
+        case .failed(let error):
+            VStack {
+                Text("Download failed: \(error)")
+                Button("Retry") { Task { try? await SwiftMemAPI.shared.initialize(config: config) } }
+            }
+        }
+    }
+}
+```
+
+### Initialize at app launch — not on first search
+
+Initialize once in your `App` or root view, not lazily at search time. This ensures the model is loaded before the user interacts:
+
+```swift
+@main
+struct MyApp: App {
+    @State private var isReady = false
+
+    var body: some Scene {
+        WindowGroup {
+            Group {
+                if isReady {
+                    ContentView()
+                } else {
+                    Color.clear  // or a splash screen
+                }
+            }
+            .overlay(ModelDownloadProgressView(state: SwiftMemDownloadState.shared))
+            .task {
+                let config = SwiftMemConfig(
+                    storageLocation: .applicationSupport,
+                    llmConfig: LLMConfig(embeddingModel: .nomicEmbedV1_5)
+                )
+                try? await SwiftMemAPI.shared.initialize(config: config)
+                isReady = true
+            }
+        }
+    }
+}
+```
+
+### No-download option
+
+If you can't afford 550 MB or want instant startup, omit `embeddingModel`. SwiftMem falls back to Apple's built-in `NLEmbedding` (512-dim, no download, lower retrieval accuracy):
+
+```swift
+// Instant startup, no internet required, lower accuracy
+let config = SwiftMemConfig(storageLocation: .applicationSupport)
+// llmConfig defaults to LLMConfig() with no embeddingModel
+try await SwiftMemAPI.shared.initialize(config: config)
+```
 ```
 
 ---
