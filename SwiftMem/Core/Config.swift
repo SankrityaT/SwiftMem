@@ -12,10 +12,16 @@ import OnDeviceCatalyst
 
 /// Configuration for on-device LLM features (extraction, reranking, classification)
 public struct LLMConfig {
-    /// Path to GGUF embedding model file (nil = use NLEmbedder fallback)
+    /// Preset embedding model (auto-downloads from HuggingFace on first use)
+    public var embeddingModel: CatalystModel?
+
+    /// Preset completion model (auto-downloads from HuggingFace on first use)
+    public var completionModel: CatalystModel?
+
+    /// Path to GGUF embedding model file (overrides preset if set)
     public var embeddingModelPath: String?
 
-    /// Path to GGUF completion/LLM model file (nil = disable LLM features)
+    /// Path to GGUF completion/LLM model file (overrides preset if set)
     public var completionModelPath: String?
 
     /// Architecture for the embedding model (auto-detected from filename if nil)
@@ -43,6 +49,8 @@ public struct LLMConfig {
     public var llmTimeout: TimeInterval
 
     public init(
+        embeddingModel: CatalystModel? = nil,
+        completionModel: CatalystModel? = nil,
         embeddingModelPath: String? = nil,
         completionModelPath: String? = nil,
         embeddingArchitecture: ModelArchitecture? = nil,
@@ -54,6 +62,8 @@ public struct LLMConfig {
         rerankingMaxTokens: Int = 256,
         llmTimeout: TimeInterval = 30.0
     ) {
+        self.embeddingModel = embeddingModel
+        self.completionModel = completionModel
         self.embeddingModelPath = embeddingModelPath
         self.completionModelPath = completionModelPath
         self.embeddingArchitecture = embeddingArchitecture
@@ -68,6 +78,19 @@ public struct LLMConfig {
 
     /// Default config with no models (all LLM features disabled)
     public static let `default` = LLMConfig()
+
+    /// Recommended config for iPhones (smaller models, balanced quality)
+    public static let mobile = LLMConfig(
+        embeddingModel: .nomicEmbedV1_5,
+        completionModel: .qwen25_1_5B
+    )
+
+    /// Recommended config for iPads/Macs (larger models, best quality)
+    public static let desktop = LLMConfig(
+        embeddingModel: .gteQwen2_1_5B,
+        completionModel: .qwen25_3B,
+        enableLLMClassification: true
+    )
 }
 
 // MARK: - Main Configuration

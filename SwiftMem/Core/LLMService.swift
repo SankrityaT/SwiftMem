@@ -23,25 +23,44 @@ public actor LLMService {
     // MARK: - Initialization
 
     /// Load the completion model. Returns true if LLM is available.
+    /// Resolves preset models (auto-downloads from HuggingFace) or uses explicit path.
     public func initialize() async -> Bool {
-        guard let modelPath = config.completionModelPath else {
-            print("ℹ️ [LLMService] No completion model path configured")
+        // Resolve model path: preset > explicit path
+        var modelPath = config.completionModelPath
+        var architecture = config.completionArchitecture
+        var modelName: String?
+
+        // Try preset model (auto-download)
+        if modelPath == nil, let preset = config.completionModel {
+            do {
+                modelPath = try await ModelDownloader.shared.resolve(preset)
+                architecture = preset.architecture
+                modelName = preset.rawValue
+                print("✅ [LLMService] Resolved preset: \(preset.displayName)")
+            } catch {
+                print("⚠️ [LLMService] Failed to resolve preset \(preset.rawValue): \(error.localizedDescription)")
+                return false
+            }
+        }
+
+        guard let resolvedPath = modelPath else {
+            print("ℹ️ [LLMService] No completion model configured")
             return false
         }
 
-        guard FileManager.default.fileExists(atPath: modelPath) else {
-            print("⚠️ [LLMService] Completion model not found at: \(modelPath)")
+        guard FileManager.default.fileExists(atPath: resolvedPath) else {
+            print("⚠️ [LLMService] Completion model not found at: \(resolvedPath)")
             return false
         }
 
         do {
-            let architecture = config.completionArchitecture
-                ?? ModelArchitecture.detectFromPath(modelPath)
+            let arch = architecture ?? ModelArchitecture.detectFromPath(resolvedPath)
+            let name = modelName ?? URL(fileURLWithPath: resolvedPath).deletingPathExtension().lastPathComponent
 
             let profile = try ModelProfile(
-                filePath: modelPath,
-                name: URL(fileURLWithPath: modelPath).deletingPathExtension().lastPathComponent,
-                architecture: architecture
+                filePath: resolvedPath,
+                name: name,
+                architecture: arch
             )
 
             // Validate model loads successfully

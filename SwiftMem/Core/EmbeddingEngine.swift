@@ -31,20 +31,42 @@ public protocol Embedder: Sendable {
 extension EmbeddingEngine {
 
     /// Create the best available embedder based on config
-    /// Tries GGUFEmbedder first (if model path provided), validates with test embedding,
-    /// then falls back to NLEmbedder on any failure
+    /// Resolves preset models (auto-downloads from HuggingFace), tries explicit path,
+    /// validates with test embedding, then falls back to NLEmbedder on any failure
     public static func createBestEmbedder(config: SwiftMemConfig) async -> Embedder {
-        // Try GGUF embedder if model path is configured
-        if let modelPath = config.llmConfig.embeddingModelPath {
+        // Resolve model path: preset model > explicit path
+        var modelPath = config.llmConfig.embeddingModelPath
+        var architecture = config.llmConfig.embeddingArchitecture
+        var dimensions = config.embeddingDimensions
+        var modelId = "gguf-embedder"
+
+        // Try preset model (auto-download)
+        if modelPath == nil, let preset = config.llmConfig.embeddingModel {
             do {
-                let architecture = config.llmConfig.embeddingArchitecture
-                    ?? ModelArchitecture.detectFromPath(modelPath)
+                modelPath = try await ModelDownloader.shared.resolve(preset)
+                architecture = preset.architecture
+                if let dims = preset.embeddingDimensions {
+                    dimensions = dims
+                }
+                modelId = preset.rawValue
+                print("✅ [EmbeddingEngine] Resolved preset: \(preset.displayName)")
+            } catch {
+                print("⚠️ [EmbeddingEngine] Failed to resolve preset \(preset.rawValue): \(error.localizedDescription)")
+            }
+        }
+
+        // Try GGUF embedder with resolved path
+        if let path = modelPath {
+            do {
+                let arch = architecture ?? ModelArchitecture.detectFromPath(path)
+                let identifier = modelId != "gguf-embedder" ? modelId :
+                    URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
 
                 let ggufEmbedder = try GGUFEmbedder(
-                    modelPath: modelPath,
-                    dimensions: config.embeddingDimensions,
-                    architecture: architecture,
-                    modelIdentifier: URL(fileURLWithPath: modelPath).deletingPathExtension().lastPathComponent
+                    modelPath: path,
+                    dimensions: dimensions,
+                    architecture: arch,
+                    modelIdentifier: identifier
                 )
 
                 // Validate with a test embedding
