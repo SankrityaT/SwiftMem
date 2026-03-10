@@ -215,53 +215,245 @@ let sessionMems = try await api.search(
 
 ---
 
-## Real App Pattern: Persistent AI Assistant
+## Elevating Your App's AI Memory Experience
+
+Without memory, every LLM session starts cold — the AI has no idea who the user is. With SwiftMem, the AI accumulates a personal knowledge graph of each user across every session, making responses feel genuinely intelligent and personal.
+
+### The Core Pattern: Retrieve → Inject → Store
 
 ```swift
-actor MemoryMiddleware {
+actor AISession {
     let api = SwiftMemAPI.shared
+    let llm: YourLLMClient       // OnDeviceCatalyst, OpenAI, Claude, etc.
     let userId: String
+    let sessionId = UUID().uuidString
 
-    func beforeLLMCall(userMessage: String) async throws -> String {
+    /// Call this instead of sending the message directly to your LLM
+    func send(_ userMessage: String) async throws -> String {
+        // 1. Retrieve what we know about this user relevant to their message
         let memories = try await api.search(
             query: userMessage,
             userId: userId,
             limit: 6
         )
-        guard !memories.isEmpty else { return userMessage }
 
-        let context = memories.map { "- \($0.content)" }.joined(separator: "\n")
-        return """
-        Relevant memories about this user:
-        \(context)
+        // 2. Separate core facts from recent episodes
+        let facts    = memories.filter { $0.isStatic }.map { "• \($0.content)" }
+        let episodes = memories.filter { !$0.isStatic }.map { "• \($0.content)" }
 
-        User: \(userMessage)
-        """
-    }
+        // 3. Build a context-rich system prompt
+        var systemParts: [String] = ["You are a helpful AI assistant."]
+        if !facts.isEmpty {
+            systemParts.append("Facts about this user:\n\(facts.joined(separator: "\n"))")
+        }
+        if !episodes.isEmpty {
+            systemParts.append("Recent context:\n\(episodes.joined(separator: "\n"))")
+        }
 
-    func afterLLMCall(userMessage: String, assistantReply: String) async throws {
-        // Store the user's message as a memory (extract key facts)
+        // 4. Call your LLM with enriched context
+        let reply = try await llm.complete(
+            system: systemParts.joined(separator: "\n\n"),
+            user: userMessage
+        )
+
+        // 5. Store the exchange so the AI learns from it
         try await api.add(
             content: userMessage,
             userId: userId,
-            containerTags: ["session:\(currentSessionId)"]
+            metadata: nil,
+            containerTags: ["session:\(sessionId)", "type:user-message"]
         )
+
+        return reply
     }
 }
 ```
 
+**Before SwiftMem:**
+```
+System: You are a helpful assistant.
+User: What should I have for breakfast?
+→ Generic answer about healthy breakfast options
+```
+
+**After SwiftMem:**
+```
+System: You are a helpful assistant.
+        Facts about this user:
+        • Prefers green tea over coffee every morning
+        • Has a lactose intolerance
+        • Trains for marathons, high-carb diet
+User: What should I have for breakfast?
+→ "Based on your marathon training and carb needs, oats with banana
+   and your green tea would be a great start..."
+```
+
 ---
 
-## Integration with OnDeviceCatalyst LLMs
+### What to Store vs What to Skip
 
-SwiftMem pairs naturally with OnDeviceCatalyst completion models for a fully on-device stack:
+Not everything a user says deserves a memory. Store signal, skip noise.
+
+```swift
+// STORE — facts, preferences, goals, events with personal meaning
+try await api.add(content: "I'm training for the London Marathon in April", userId: uid)
+try await api.add(content: "Allergic to peanuts", userId: uid)
+try await api.add(content: "My daughter Emma started kindergarten this week", userId: uid)
+try await api.add(content: "Moved to Austin from Chicago last year", userId: uid)
+
+// STORE — after meaningful conversations, use addConversation to extract facts automatically
+let extracted = try await api.addConversation(
+    conversation: fullTranscript,   // raw back-and-forth text
+    userId: uid
+)
+// SwiftMem extracts structured facts and stores only the signal
+
+// SKIP — single-turn throwaway messages, greetings, clarification questions
+// "Ok", "Thanks", "What do you mean?", "lol" → don't store these
+```
+
+---
+
+### Static vs Dynamic: Making the AI Sound Like It Knows the User
+
+SwiftMem automatically classifies memories as **static** (core facts) or **dynamic** (episodic events).
+
+```swift
+let memories = try await api.search(query: userMessage, userId: uid, limit: 8)
+
+// Static = identity facts, preferences, permanent traits
+let whoTheyAre = memories.filter { $0.isStatic }
+// "name is Jordan", "iOS engineer at NovaMind", "has a border collie named Luna"
+
+// Dynamic = what happened recently, evolving context
+let whatHappened = memories.filter { !$0.isStatic }
+// "went hiking in Yosemite last weekend", "mentioned feeling anxious about demo"
+
+// Use them differently in your system prompt:
+let systemPrompt = """
+You know this user well:
+\(whoTheyAre.map { $0.content }.joined(separator: ". "))
+
+Recent context:
+\(whatHappened.map { $0.content }.joined(separator: ". "))
+
+Respond as someone who genuinely knows them — don't reference memories robotically.
+"""
+```
+
+---
+
+### Session Continuity: Pick Up Exactly Where You Left Off
+
+```swift
+// At session start: surface what was discussed last time
+let lastSession = try await api.search(
+    query: "recent conversations and what we were working on",
+    userId: uid,
+    limit: 4,
+    containerTags: ["session:\(previousSessionId)"]
+)
+
+// At session end: store a summary
+try await api.add(
+    content: "Session summary: \(sessionSummary)",
+    userId: uid,
+    metadata: nil,
+    containerTags: ["session:\(sessionId)", "type:summary"]
+)
+
+// Temporal search — "what did we talk about last week?"
+let lastWeek = try await api.search(
+    query: "what topics did we cover last week?",
+    userId: uid,
+    limit: 6
+    // temporal filter parsed automatically from query
+)
+```
+
+---
+
+### App-Type Playbook
+
+#### Personal AI Assistant / Chatbot
+
+```swift
+// Store every meaningful user message + AI reply summary
+// Retrieve: top-6 by relevance to current message
+// Prompt injection: "Here's what you know about this user: ..."
+
+// Key tags: "session:{id}", "type:preference", "type:goal", "type:fact"
+```
+
+#### Coaching & Therapy App
+
+```swift
+// Store: progress check-ins, emotional state, goals, breakthroughs
+// Retrieve: recent sessions + relevant historical context
+// Use isStatic to separate "I have anxiety" (core) from "hard week at work" (episodic)
+
+// Tag by mood/topic for filtered retrieval:
+try await api.add(
+    content: "Felt overwhelmed by work deadlines this week",
+    userId: uid,
+    containerTags: ["topic:stress", "topic:work", "session:\(sid)"]
+)
+
+let stressHistory = try await api.search(
+    query: "work stress patterns",
+    userId: uid,
+    containerTags: ["topic:stress"]
+)
+```
+
+#### Notes & Knowledge Base
+
+```swift
+// Use addDocument for long-form content (chunked automatically)
+let chunks = try await api.addDocument(
+    content: articleText,
+    title: "WWDC 2026 Highlights",
+    userId: uid,
+    containerTags: ["topic:ios", "source:article"]
+)
+
+// Later: semantic search across all stored knowledge
+let relevant = try await api.search(
+    query: "SwiftUI performance improvements",
+    userId: uid
+)
+```
+
+#### Customer Support / CRM
+
+```swift
+// Tag by ticket, product, sentiment
+try await api.add(
+    content: "Reported crash on checkout flow, iOS 17.4, iPhone 14",
+    userId: customerId,
+    containerTags: ["ticket:\(ticketId)", "topic:crash", "product:checkout"]
+)
+
+// Before each support interaction, surface the customer's full history
+let history = try await api.search(
+    query: "past issues and reported bugs",
+    userId: customerId,
+    limit: 10
+)
+```
+
+---
+
+### Integration with OnDeviceCatalyst LLMs
+
+For a fully private, zero-cloud stack:
 
 ```swift
 let config = SwiftMemConfig(
     storageLocation: .applicationSupport,
     llmConfig: LLMConfig(
-        embeddingModel: .nomicEmbedV1_5,   // retrieval
-        completionModel: .qwen25_1_5B,     // fact extraction + reranking
+        embeddingModel: .nomicEmbedV1_5,   // semantic retrieval (~550 MB)
+        completionModel: .qwen25_1_5B,     // fact extraction + reranking (~1.6 GB)
         enableLLMExtraction: true,
         enableLLMReranking: true
     )
@@ -269,12 +461,12 @@ let config = SwiftMemConfig(
 try await api.initialize(config: config)
 ```
 
-When a completion model is loaded, SwiftMem uses it to:
-- Extract structured facts from raw conversation text (`addConversation`)
-- Rerank retrieved memories by semantic relevance (Phase 3)
-- Detect contradictions between new and stored memories
+With a completion model loaded, SwiftMem upgrades automatically:
+- `addConversation` extracts structured facts via LLM (vs heuristic regex fallback)
+- Search results get reranked by the LLM for semantic relevance
+- Contradiction detection can reason about superseded facts (e.g. "moved from Chicago to Austin")
 
-Without a completion model, everything gracefully falls back to heuristics — still very usable.
+Without a completion model, everything falls back to heuristics — still solid for most apps.
 
 ---
 
