@@ -103,91 +103,238 @@ The model auto-downloads from HuggingFace on first use. Progress is published to
 
 ---
 
-## Core API
+## API Reference — Every Call Explained
 
-### Add
+### `initialize(config:)`
+
+Loads the embedding model, sets up SQLite, wires all internal components. Call once at app launch — never call in a search or add hot path.
 
 ```swift
-// Simple
-try await api.add(content: "I love Italian food", userId: uid)
+try await SwiftMemAPI.shared.initialize(config: config)
+```
 
-// With tags and temporal grounding
+**What it does internally:** creates the SQLite schema, runs any pending migrations (re-embeds existing memories if you switched models), starts the memory decay background task.
+
+**Mistakes to avoid:**
+- Don't call it lazily on first search — the 2–3s startup blocks the user mid-interaction
+- Don't call it more than once per app session — it's a no-op but wastes time
+- Don't call `search` or `add` before `initialize` completes — they throw `SwiftMemError.notInitialized`
+
+---
+
+### `add(content:userId:metadata:containerTags:conversationDate:)`
+
+Embeds and stores a single memory. The main way to feed the system.
+
+```swift
+// Minimal
+try await api.add(content: "User is vegetarian", userId: uid)
+
+// Full params
 try await api.add(
-    content: "Had a great 1:1 with my manager today",
+    content: "Submitted the app to App Store review",
     userId: uid,
     metadata: nil,
-    containerTags: ["topic:work", "session:2026-03-09"],
-    conversationDate: Date()   // when the conversation happened
-)
-
-// Extract memories from a raw conversation transcript
-let count = try await api.addConversation(
-    conversation: fullTranscriptString,
-    userId: uid
+    containerTags: ["topic:work", "session:\(sessionId)"],
+    conversationDate: Date()  // timestamp stored on the memory node
 )
 ```
 
-### Search
+**What it does internally:** embeds with `"search_document: "` prefix → entity + topic extraction → relationship detection → static/dynamic classification → SQLite write → async contradiction check (fire-and-forget).
+
+**conversationDate vs eventDate:** `conversationDate` sets the memory's `timestamp` — when you're storing a message that *happened* during a past session. Leave it `nil` to use the current time.
+
+**Mistakes to avoid:**
+- Don't store entire conversation transcripts as one memory — they embed poorly and retrieve even worse. Use `addConversation` or break into individual facts
+- Don't call `add` in a loop for 50+ items — use `batchAdd`. Each `add` runs relationship detection against all existing memories (O(n) per call)
+- Don't worry about duplicates — relationship detection creates `UPDATES`/`EXTENDS` edges automatically; `consolidateMemories` can prune later
+
+---
+
+### `addConversation(conversation:userId:)`
+
+Feeds a raw conversation transcript and automatically extracts the meaningful facts from it. The recommended way to ingest a full session.
 
 ```swift
-// Basic
-let results = try await api.search(query: "food preferences", userId: uid, limit: 5)
+let transcript = """
+User: I just got back from hiking Yosemite with my dog Luna
+Assistant: That sounds amazing! How was it?
+User: Exhausting but worth it. I'm training for a marathon in April
+"""
 
-// Tag-scoped (only look inside "topic:work")
+let memoriesAdded = try await api.addConversation(
+    conversation: transcript,
+    userId: uid
+)
+// stores: "went hiking in Yosemite with Luna", "training for marathon in April"
+// skips: filler turns, assistant messages, pleasantries
+```
+
+**What it does internally:** if an LLM completion model is configured, it uses the LLM to extract structured facts. Without an LLM, falls back to heuristic extraction (sentence splitting + topic scoring).
+
+**When to call it:** at the end of each session, pass the full transcript. Let SwiftMem figure out what's worth remembering.
+
+**Mistakes to avoid:**
+- Don't pass transcripts with thousands of tokens without an LLM — heuristic extraction struggles at scale
+- Don't call it AND manually `add` the same content — you'll get duplicates
+
+---
+
+### `search(query:userId:limit:containerTags:temporalFilter:)`
+
+The core retrieval call. Pass a plain English question — not keywords.
+
+```swift
+// Ask like a person, not a search engine
+let results = try await api.search(
+    query: "What does the user like to eat?",   // good — semantic
+    userId: uid,
+    limit: 6
+)
+// NOT: query: "food eat like" — keyword stuffing hurts semantic search
+
+// Scope to a topic
 let workMems = try await api.search(
-    query: "stress at work",
+    query: "how is work going",
     userId: uid,
     limit: 5,
     containerTags: ["topic:work"]
 )
 
-// Temporal — "last week", "yesterday", "recently" parsed automatically
-let recent = try await api.search(
-    query: "What did I do last weekend?",
-    userId: uid
-)
+// Temporal expressions are parsed automatically
+let recent = try await api.search(query: "what happened last week?", userId: uid)
+let yesterday = try await api.search(query: "what did I do yesterday?", userId: uid)
+let lastMonth = try await api.search(query: "any updates from last month?", userId: uid)
 
-// Explicit date range
-let interval = DateInterval(start: startDate, end: endDate)
-let ranged = try await api.search(
-    query: "project updates",
-    userId: uid,
-    temporalFilter: interval
-)
-
-// Each result has:
-result.content      // original text
-result.score        // RRF relevance score
-result.isStatic     // true = core fact (name, job), false = episodic
-result.timestamp    // when stored
-result.entities     // extracted entities
-result.topics       // extracted topics
-result.containerTags
+// Or provide a date range directly
+let range = DateInterval(start: weekAgo, end: Date())
+let ranged = try await api.search(query: "project updates", userId: uid, temporalFilter: range)
 ```
 
-### Update & Delete
+**What each result field means:**
+
+| Field | Type | Description |
+|---|---|---|
+| `content` | `String` | The original stored text |
+| `score` | `Float` | RRF relevance score — higher = more relevant |
+| `isStatic` | `Bool` | `true` = core fact (name, job, allergy), `false` = episodic event |
+| `timestamp` | `Date` | When the memory was created |
+| `entities` | `[String]` | Extracted named entities (people, places, orgs) |
+| `topics` | `[String]` | Extracted topic keywords |
+| `containerTags` | `[String]` | Tags assigned at write time |
+| `relationships` | `[MemoryRelationship]` | Edges to related memories |
+
+**How many results to request:**
+- For LLM context injection: 5–8 (balance relevance vs token cost)
+- For displaying to users in a UI: 10–20
+- For temporal-only queries (after parsing narrows the pool): 3–5 is enough
+
+**Mistakes to avoid:**
+- Don't pass an empty string — returns no results, wastes an embed call (guarded internally)
+- Don't use `containerTags` as the only filter — always include a real `query`, even generic ("recent memories"). Tags narrow the pool; the query ranks within it
+- Don't request `limit: 1` for multi-hop questions (e.g. "what's my brother's job?") — you need enough results to cover both memory nodes
+
+---
+
+### `update(memoryId:newContent:)`
+
+Corrects or supersedes a specific memory. Creates a new node with an `UPDATES` relationship pointing back to the old one.
 
 ```swift
-// Update a specific memory (creates a versioned successor)
-try await api.update(memoryId: uuid, newContent: "I moved from Chicago to Austin")
+// User corrected something they said earlier
+try await api.update(
+    memoryId: oldMemoryId,
+    newContent: "I moved to Austin from Chicago (not Seattle)"
+)
+```
 
-// Delete one
+**What it does internally:** embeds the new content, creates a successor node with `isLatest = true`, marks the old node `isLatest = false`. Search only returns `isLatest` nodes by default.
+
+**When to use vs just calling `add`:** use `update` when you have the specific `memoryId` and want to preserve the revision history. Use `add` when you're storing new information that supplements (rather than corrects) existing memories.
+
+---
+
+### `delete(memoryId:)` and `clearAll()`
+
+```swift
+// Delete a specific memory (e.g. user taps "forget this")
 try await api.delete(memoryId: uuid)
 
-// Wipe everything (useful for testing / logout)
+// Wipe all memories for a user logout or test reset
 try await api.clearAll()
 ```
 
-### Batch
+**`clearAll` deletes everything in the store** — all users, all memories, all relationships. Use it for logout only if your app is single-user. For multi-user apps, filter-delete by `"user:\(uid)"` tag instead.
+
+---
+
+### `batchAdd(contents:userId:containerTags:)`
+
+Add many memories at once — dramatically faster than calling `add` in a loop.
 
 ```swift
-// Batch add — serial embedding (thread-safe with llama.cpp)
 try await api.batchAdd(
-    contents: ["Likes hiking", "Dislikes loud music", "Has a dog named Luna"],
+    contents: [
+        "Prefers morning workouts",
+        "Has a peanut allergy",
+        "Works in finance at Goldman Sachs",
+        "Lives in New York, originally from Boston"
+    ],
     userId: uid,
-    containerTags: [["topic:hobbies"], ["topic:preferences"], ["topic:pets"]]
+    containerTags: [
+        ["topic:fitness"],
+        ["topic:health"],
+        ["topic:work"],
+        ["topic:location"]
+    ]
 )
 ```
+
+**What it does internally:** serial batch embedding (one `getEmbeddingBatch` call to llama.cpp instead of N individual calls), then relationship detection and storage per node.
+
+**Mistakes to avoid:**
+- Don't call `add` in a loop for bulk imports — each call embeds and runs relationship detection separately. `batchAdd` batches the expensive embedding step
+- Don't mix drastically different topics in one batch if you want precise relationship detection — the detector checks all-pairs within the batch
+
+---
+
+### `addDocument(content:title:userId:containerTags:)`
+
+Chunks a long document (article, PDF text, notes), embeds each chunk, and stores them as linked memory nodes. This is SwiftMem's RAG mode.
+
+```swift
+let chunkCount = try await api.addDocument(
+    content: longArticleText,
+    title: "Q1 2026 Product Strategy",
+    userId: uid,
+    containerTags: ["type:document", "topic:strategy"]
+)
+
+// Later: search retrieves the most relevant chunks
+let relevant = try await api.search(
+    query: "what was the plan for growth in Q1?",
+    userId: uid,
+    containerTags: ["type:document"]
+)
+```
+
+**When to use:** any time the content is longer than ~500 characters. Short facts → `add`. Long-form content → `addDocument`.
+
+---
+
+### `getStats()` and `consolidateMemories(userId:)`
+
+```swift
+// How many memories, relationships, static vs dynamic
+let stats = try await api.getStats()
+print("\(stats.totalMemories) memories, \(stats.totalRelationships) relationships")
+
+// Remove near-duplicate memories (cosine sim > 0.95)
+let removed = try await api.consolidateMemories(userId: uid)
+print("Pruned \(removed) duplicates")
+```
+
+**When to consolidate:** after bulk imports, or periodically (e.g. once a week). Normal session usage rarely creates duplicates thanks to relationship detection.
 
 ---
 
