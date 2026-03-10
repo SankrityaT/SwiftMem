@@ -7,6 +7,7 @@
 //
 
 import Foundation
+import OnDeviceCatalyst
 
 /// Simple, clean API for SwiftMem
 /// Usage:
@@ -63,6 +64,7 @@ public actor SwiftMemAPI {
         guard !isInitialized else { return }
 
         // Select best embedder: explicit > GGUF (via config) > NLEmbedder
+        // Download progress is forwarded to SwiftMemDownloadState.shared for SwiftUI observation.
         if let explicitEmbedder = embedder {
             self.embedder = explicitEmbedder
         } else {
@@ -193,7 +195,8 @@ public actor SwiftMemAPI {
             let batchEnd = min(batchStart + batchSize, allMemories.count)
             let batch = Array(allMemories[batchStart..<batchEnd])
 
-            let texts = batch.map { $0.content }
+            let docPrefix = taskDocumentPrefix()
+            let texts = batch.map { docPrefix + $0.content }
             let newEmbeddings = try await embedder.embedBatch(texts)
 
             for (i, memory) in batch.enumerated() {
@@ -308,8 +311,8 @@ public actor SwiftMemAPI {
             throw SwiftMemError.notInitialized
         }
         
-        // Generate embedding
-        let embedding = try await embedder.embed(content)
+        // Generate embedding (prepend document prefix for asymmetric retrieval models)
+        let embedding = try await embedder.embed(taskDocumentPrefix() + content)
         
         // Extract entities for better relationship detection
         let entityExtractor = EntityExtractor()
@@ -408,15 +411,22 @@ public actor SwiftMemAPI {
             throw SwiftMemError.notInitialized
         }
 
-        // Generate query embedding
-        var queryEmbedding = try await embedder.embed(query)
+        // Guard empty/whitespace query — nothing to embed
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedQuery.isEmpty else {
+            print("ℹ️ [SwiftMemAPI] Empty query — returning no results")
+            return []
+        }
+
+        // Generate query embedding (prepend query prefix for asymmetric retrieval models)
+        var queryEmbedding = try await embedder.embed(taskQueryPrefix() + trimmedQuery)
 
         // v3: HyDE query expansion — blend hypothetical memory embedding 50/50 with query
         if config.llmConfig.enableHyDE, let llm = llmService, await llm.isAvailable {
             if let hypothetical = await llm.generateHypotheticalDocument(
                 query: query,
                 maxTokens: config.llmConfig.hydeMaxTokens
-            ), let hydeEmbedding = try? await embedder.embed(hypothetical) {
+            ), let hydeEmbedding = try? await embedder.embed(taskDocumentPrefix() + hypothetical) {
                 queryEmbedding = zip(queryEmbedding, hydeEmbedding).map { ($0 + $1) / 2.0 }
                 print("🔮 [SwiftMemAPI] HyDE: blended query embedding with hypothetical document")
             }
@@ -474,7 +484,8 @@ public actor SwiftMemAPI {
             queryEmbedding: queryEmbedding,
             topK: limit * 2,  // Get more results for graph expansion
             vectorWeight: 0.7,
-            keywordWeight: 0.3
+            keywordWeight: 0.3,
+            candidateMemories: filteredMemories
         )
         
         // Get static memories (core facts) for boosting
@@ -482,16 +493,23 @@ public actor SwiftMemAPI {
         let staticIds = Set(staticMemories.map { $0.id })
         print("📌 [SwiftMemAPI] \(staticIds.count) static memories (core facts) available for boosting")
         
+        // Only boost static memories that are already relevant to this query.
+        // Compute the median score so we don't blindly boost low-scoring static memories
+        // (e.g. "My name is Alex" shouldn't dominate a pet-related query).
+        let sortedScores = hybridResults.map { $0.score }.sorted()
+        let medianScore: Float = sortedScores.isEmpty ? 0 : sortedScores[sortedScores.count / 2]
+
         // Apply static memory boost to hybrid results
         let boostedResults = hybridResults.map { scoredMemory -> (MemoryNode, Float) in
             var score = scoredMemory.score
-            
-            // USER PROFILE BOOST: Static memories (core facts) get priority
-            if staticIds.contains(scoredMemory.memory.id) {
+
+            // Only boost if the memory is already relevant (above median) — prevents
+            // irrelevant static memories from crowding out semantically better matches.
+            if staticIds.contains(scoredMemory.memory.id), score >= medianScore {
                 score = min(1.0, score + 0.1)
                 print("  📌 Boosting static memory: \(String(scoredMemory.memory.content.prefix(40)))...")
             }
-            
+
             return (scoredMemory.memory, score)
         }
         
@@ -596,9 +614,25 @@ public actor SwiftMemAPI {
             embedder: embedder
         )
         
-        // Store each memory
+        // Store each memory with relationship detection
         for extractedMemory in extracted {
-            let memoryNode = extractedMemory.toMemoryNode()
+            var memoryNode = extractedMemory.toMemoryNode()
+
+            if let detector = relationshipDetector {
+                let existingMemories = await store.getAllMemories()
+                let detected = (try? await detector.detectRelationships(
+                    newMemory: memoryNode,
+                    existingMemories: existingMemories
+                )) ?? []
+                for rel in detected {
+                    memoryNode.addRelationship(MemoryRelationship(
+                        type: rel.type,
+                        targetId: rel.targetId,
+                        confidence: rel.confidence
+                    ))
+                }
+            }
+
             try await store.addMemory(memoryNode)
             _ = await userProfileManager?.classifyMemory(memoryNode, userId: userId)
         }
@@ -636,8 +670,8 @@ public actor SwiftMemAPI {
             throw SwiftMemError.memoryNotFound
         }
         
-        // Generate new embedding
-        let newEmbedding = try await embedder.embed(newContent)
+        // Generate new embedding (document prefix for asymmetric retrieval models)
+        let newEmbedding = try await embedder.embed(taskDocumentPrefix() + newContent)
         
         // Create new memory that UPDATES the old one
         let newMemory = MemoryNode(
@@ -706,6 +740,40 @@ public actor SwiftMemAPI {
         )
     }
     
+    /// Re-detect and persist relationships for all existing memories.
+    /// Call this once to backfill relationships for memories stored before relationship detection was wired in.
+    public func rebuildRelationships() async throws -> Int {
+        guard let store = memoryGraphStore, let detector = relationshipDetector else {
+            throw SwiftMemError.notInitialized
+        }
+
+        let allMemories = await store.getAllMemories()
+        guard allMemories.count >= 2 else { return 0 }
+
+        var added = 0
+        for (i, memory) in allMemories.enumerated() {
+            guard !memory.embedding.isEmpty else { continue }
+            let others = allMemories.enumerated()
+                .filter { $0.offset != i }
+                .map { $0.element }
+            let detected = (try? await detector.detectRelationships(
+                newMemory: memory,
+                existingMemories: others
+            )) ?? []
+            for rel in detected {
+                try? await store.addRelationship(
+                    from: memory.id,
+                    to: rel.targetId,
+                    type: rel.type,
+                    confidence: rel.confidence
+                )
+                added += 1
+            }
+        }
+        print("🔗 [SwiftMemAPI] rebuildRelationships: added \(added) relationships across \(allMemories.count) memories")
+        return added
+    }
+
     /// Get all memories (for visualization/debugging)
     public func getAllMemories() async throws -> [MemoryResult] {
         guard let store = memoryGraphStore else {
@@ -896,8 +964,9 @@ public actor SwiftMemAPI {
             allTags.append("user:\(userId)")
         }
 
-        // Batch embed all chunks
-        let texts = chunks.map { $0.content }
+        // Batch embed all chunks (document prefix for asymmetric retrieval models)
+        let docPrefix = taskDocumentPrefix()
+        let texts = chunks.map { docPrefix + $0.content }
         let embeddings = try await embedder.embedBatch(texts)
 
         // Store each chunk as a MemoryNode
@@ -945,8 +1014,23 @@ public actor SwiftMemAPI {
         guard let decay = memoryDecay else {
             throw SwiftMemError.notInitialized
         }
-        
+
         return try await decay.pruneMemories(threshold: threshold)
+    }
+
+    // MARK: - Task Prefix Helpers (asymmetric retrieval)
+
+    /// Query-side prefix for asymmetric retrieval models.
+    /// nomic-embed-text-v1.5 requires "search_query: " to activate retrieval mode.
+    private func taskQueryPrefix() -> String {
+        guard config.llmConfig.embeddingModel == .nomicEmbedV1_5 else { return "" }
+        return "search_query: "
+    }
+
+    /// Document-side prefix for asymmetric retrieval models.
+    private func taskDocumentPrefix() -> String {
+        guard config.llmConfig.embeddingModel == .nomicEmbedV1_5 else { return "" }
+        return "search_document: "
     }
 }
 
