@@ -52,7 +52,8 @@ public actor SwiftMemAPI {
     private var temporalQueryParser: TemporalQueryParser?
 
     private var isInitialized = false
-    
+    private var embedderRefCount = 0
+
     private init() {
         self.config = .default
     }
@@ -253,7 +254,56 @@ public actor SwiftMemAPI {
         
         print("✅ [SwiftMemAPI] Reset complete - all connections closed")
     }
-    
+
+    // MARK: - Embedder Lifecycle (Load / Unload)
+
+    /// Load the embedding model into memory. Call before search/add operations.
+    /// Reference-counted: each `loadEmbedder()` must be paired with `unloadEmbedder()`.
+    /// Safe to call multiple times — only the first load actually creates the model.
+    public func loadEmbedder() async {
+        embedderRefCount += 1
+        guard self.embedder == nil else { return }
+
+        let newEmbedder = await EmbeddingEngine.createBestEmbedder(config: config)
+        self.embedder = newEmbedder
+        self.embeddingEngine = EmbeddingEngine(embedder: newEmbedder, config: config)
+        if let rd = relationshipDetector {
+            self.batchOperations = BatchOperations(embedder: newEmbedder, relationshipDetector: rd)
+        }
+        if let gs = graphStore, let vs = vectorStore, let ee = embeddingEngine {
+            self.retrievalEngine = RetrievalEngine(
+                graphStore: gs,
+                vectorStore: vs,
+                embeddingEngine: ee,
+                config: config
+            )
+        }
+        print("✅ [SwiftMemAPI] Embedder loaded (\(newEmbedder.modelIdentifier), \(newEmbedder.dimensions)d)")
+    }
+
+    /// Unload the embedding model from memory to free RAM.
+    /// Only actually frees when all paired `loadEmbedder()` calls are balanced.
+    /// Storage, profiles, search indices, and graph data remain intact.
+    public func unloadEmbedder() {
+        embedderRefCount -= 1
+        guard embedderRefCount <= 0 else {
+            print("ℹ️ [SwiftMemAPI] Embedder still in use (refCount: \(embedderRefCount))")
+            return
+        }
+        embedderRefCount = 0
+        let id = embedder?.modelIdentifier ?? "unknown"
+        embedder = nil
+        embeddingEngine = nil
+        batchOperations = nil
+        retrievalEngine = nil
+        print("✅ [SwiftMemAPI] Embedder unloaded (\(id)) — RAM freed")
+    }
+
+    /// Whether the embedding model is currently loaded in memory.
+    public var isEmbedderLoaded: Bool {
+        embedder != nil
+    }
+
     // MARK: - Helper Functions
     
     /// Extract topics from content using enhanced keyword extraction
