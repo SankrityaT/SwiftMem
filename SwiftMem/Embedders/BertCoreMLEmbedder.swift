@@ -53,7 +53,7 @@ public actor BertCoreMLEmbedder: Embedder {
     }
 
     public func embed(_ text: String) async throws -> [Float] {
-        let output = modelBundle.encode(text)
+        let output = try modelBundle.encode(text)
         let result = await output.cast(to: Float.self).shapedArray(of: Float.self).scalars
         guard result.count >= dimensions else {
             throw CoreMLEmbedderError.dimensionMismatch(expected: dimensions, got: result.count)
